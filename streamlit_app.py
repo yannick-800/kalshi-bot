@@ -23,6 +23,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent / "python"))
 import streamlit as st  # noqa: E402
 from streamlit_autorefresh import st_autorefresh  # noqa: E402
 
+import api  # noqa: E402
+import auth  # noqa: E402
 import crypto_signal  # noqa: E402
 import db  # noqa: E402
 import scanner  # noqa: E402
@@ -264,14 +266,22 @@ open_ct = stats["open_filled"] + stats["pending"]
 # ── sidebar (brand + nav + status, like the desktop) ────────────────
 with st.sidebar:
     st.markdown('<div class="k-brand">KALSHI BOT</div><div class="k-ver">v1.0.0 · online</div><br>', unsafe_allow_html=True)
-    page = st.radio("nav", ["📊  Panel", "📡  Señales", "💼  Posiciones", "⚙️  Ajustes", "📜  Registros"],
+    page = st.radio("nav", ["📊  Panel", "📡  Señales", "💼  Posiciones", "⚙️  Ajustes",
+                            "🔑  Claves", "📜  Registros"],
                     label_visibility="collapsed")
     st.markdown("<hr>", unsafe_allow_html=True)
     up = int(time.time() - engine["started_at"])
     dot = "🟢" if engine["cycles"] > 0 else "🟡"
     st.markdown(f'<div class="k-sub">{dot} corriendo · {engine["cycles"]} ciclos · {up//3600}h {(up%3600)//60}m</div>',
                 unsafe_allow_html=True)
-    st.markdown('<div class="k-sub">Local · dinero virtual, sin claves</div>', unsafe_allow_html=True)
+    _env_now = cfg.get("kalshi_env", "demo")
+    _live_now = bool(cfg.get("enable_trading")) and not cfg.get("paper_trading", True)
+    _cred_now = auth.credentials_present(_env_now)
+    if _live_now and _cred_now:
+        st.markdown('<div class="k-sub" style="color:#EF4444">⚠ EN VIVO · dinero real</div>', unsafe_allow_html=True)
+    else:
+        _kt = "clave guardada" if _cred_now else "sin claves"
+        st.markdown(f'<div class="k-sub">Paper · dinero virtual · {_kt}</div>', unsafe_allow_html=True)
 
 
 # ── top bar (badges) ────────────────────────────────────────────────
@@ -284,7 +294,13 @@ if cfg.get("crypto_signal_enabled"):
     active.append("₿ cripto")
 if cfg.get("trade_whales"):
     active.append("🐋 ballenas")
-topbar = badge("DEMO", "info") + " " + badge("PAPER · simulación", "neutral") + " " + \
+_env_badge = cfg.get("kalshi_env", "demo")
+_live = bool(cfg.get("enable_trading")) and not cfg.get("paper_trading", True)
+if _live:
+    mode_badge = badge("PRODUCCIÓN", "loss") + " " + badge("DINERO REAL", "loss")
+else:
+    mode_badge = badge(_env_badge.upper(), "info") + " " + badge("PAPER · simulación", "neutral")
+topbar = mode_badge + " " + \
     badge("operando en vivo" if active else "en pausa", "win" if active else "neutral")
 st.markdown(f'<div style="display:flex;gap:8px;margin-bottom:10px">{topbar}</div>', unsafe_allow_html=True)
 
@@ -505,6 +521,86 @@ elif PAGE == "Ajustes":
     cfg["stop_loss_on_day"] = r[0].number_input("Stop-loss diario $ (negativo lo arma)", value=float(cfg.get("stop_loss_on_day", -30)), step=5.0)
     cfg["take_profit_on_day"] = r[1].number_input("Take-profit diario $ (0 = off)", value=float(cfg.get("take_profit_on_day", 0)), step=5.0)
     st.caption("Todos los cambios se aplican **en vivo** al motor. Modo paper — dinero virtual.")
+
+# ══════════════════════════ CLAVES ════════════════════════════════
+elif PAGE == "Claves":
+    st.markdown('<h2 class="k-neon" style="margin:0 0 6px">🔑 Credenciales de Kalshi</h2>', unsafe_allow_html=True)
+
+    st.markdown(
+        '<div class="k-card" style="border-color:rgba(239,68,68,.35);background:rgba(239,68,68,.06)">'
+        '<b style="color:#EF4444">⚠ Leé esto antes de cargar claves de producción.</b><br>'
+        '<span style="color:var(--muted);font-size:13px;line-height:1.6">'
+        'Esta versión corre en <b>Streamlit Cloud</b> (infra compartida de un tercero). '
+        'Si cargás tu clave privada RSA aquí, sale de tu equipo y viaja a esos servidores — '
+        'justo el riesgo que quisimos evitar. El disco es efímero: si la app se reinicia, la clave se borra. '
+        'Recomendación: usá <b>demo</b> aquí para probar la conexión, y operá en <b>producción con dinero real '
+        'solo desde la app de escritorio</b>, donde la clave nunca sale de tu Mac (guardada 0600).'
+        '</span></div>', unsafe_allow_html=True)
+
+    status = auth.credentials_status_all()
+    kenv = st.radio("Entorno de la clave", ["demo", "production"], horizontal=True,
+                    format_func=lambda e: "demo" if e == "demo" else "producción",
+                    key="cred_env")
+    present = status.get(kenv, {}).get("present", False)
+    st.markdown(badge("clave guardada", "win") if present else badge("sin configurar", "neutral"),
+                unsafe_allow_html=True)
+
+    api_key = st.text_input("ID de clave API", value="", type="password",
+                            placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
+                            help="En Kalshi → Settings → API Keys.")
+    rsa_pem = st.text_area("Clave privada RSA (PEM)", value="", height=160,
+                           placeholder="-----BEGIN RSA PRIVATE KEY-----\n...\n-----END RSA PRIVATE KEY-----",
+                           help="El archivo .pem que te dio Kalshi al crear la clave.")
+
+    b = st.columns(3)
+    if b[0].button("💾 Guardar", use_container_width=True, disabled=not (api_key and rsa_pem)):
+        try:
+            auth.save_credentials(api_key.strip(), rsa_pem, kenv)
+            st.success(f"Credenciales guardadas para {'demo' if kenv=='demo' else 'producción'}.")
+        except Exception as e:  # noqa: BLE001
+            st.error(f"No se pudo guardar: {e}")
+    if b[1].button("🛡 Probar conexión", use_container_width=True, disabled=not present):
+        try:
+            with auth.ENV_LOCK:
+                saved = auth.get_env()
+                try:
+                    auth.set_env(kenv)
+                    auth.reset_credential_cache()
+                    auth.prime_credentials(sync_time=True)
+                    bal = asyncio.run(api.get_balance())
+                finally:
+                    auth.set_env(saved)
+                    auth.reset_credential_cache()
+            cents = int(bal.get("balance", 0))
+            st.success(f"Conectado — saldo ${cents/100:.2f}.")
+        except Exception as e:  # noqa: BLE001
+            st.error(f"Falló la prueba: {e}")
+    if b[2].button("🗑 Borrar", use_container_width=True, disabled=not present):
+        auth.clear_credentials(kenv)
+        st.success(f"Credenciales de {'demo' if kenv=='demo' else 'producción'} borradas.")
+
+    st.markdown("<hr>", unsafe_allow_html=True)
+    st.markdown('<div class="k-label">Operar en vivo (dinero real)</div>', unsafe_allow_html=True)
+    prod_ready = status.get("production", {}).get("present", False)
+    live_on = bool(cfg.get("enable_trading")) and not cfg.get("paper_trading", True)
+    st.caption("Requiere clave de **producción** guardada y probada. Doble interruptor de seguridad: "
+               "cambia el entorno a producción, apaga el modo paper y activa el kill-switch.")
+    new_live = st.toggle("Activar operación real con dinero", value=live_on, disabled=not prod_ready)
+    if new_live != live_on:
+        if new_live:
+            cfg["kalshi_env"] = "production"; cfg["paper_trading"] = False; cfg["enable_trading"] = True
+            st.warning("Operación REAL activada. El motor colocará órdenes con dinero real en Kalshi.")
+        else:
+            cfg["kalshi_env"] = "demo"; cfg["paper_trading"] = True; cfg["enable_trading"] = False
+            st.info("Vuelto a paper (dinero virtual).")
+    if not prod_ready:
+        st.caption("Guardá y probá una clave de **producción** arriba para habilitar este interruptor.")
+
+    st.markdown(
+        '<div class="k-card" style="font-size:12px;color:var(--dim);line-height:1.6">'
+        '<b style="color:var(--muted)">Privacidad:</b> las claves se escriben en un archivo legible solo por el '
+        'proceso (0600). La app no hace ninguna llamada de red salvo a Kalshi (y, si los activás, a feeds públicos '
+        'de precios cripto). No hay telemetría ni cuenta.</div>', unsafe_allow_html=True)
 
 # ══════════════════════════ REGISTROS ═════════════════════════════
 elif PAGE == "Registros":
