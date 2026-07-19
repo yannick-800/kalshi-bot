@@ -1,25 +1,25 @@
-"""Kalshi Bot — online paper-trading dashboard (Streamlit).
+"""Kalshi Bot — online paper-trading app (Streamlit).
 
-Reuses the EXACT same trading logic as the desktop app (the modules in python/),
-just with a Streamlit front-end so you can watch it run online and leave it going
-overnight. Paper-trading only — no API keys, zero risk, safe to host publicly.
-
-Deploy on https://share.streamlit.io with main file `streamlit_app.py`.
+Same trading logic as the desktop app (imports the python/ modules unchanged),
+rebuilt to look and feel like the desktop app: dark-neon theme, sidebar pages
+(Panel · Señales · Posiciones · Ajustes · Registros), the same cards, badges and
+coloured tables. Paper-trading only — no keys, safe to host publicly.
 """
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import sys
 import threading
 import time
+from collections import deque
+from datetime import datetime, timezone
 from pathlib import Path
 
-# Ephemeral, writable DB location (Streamlit Cloud resets /tmp on restart).
 os.environ.setdefault("KALSHI_BOT_USERDATA", "/tmp/kalshibot")
 sys.path.insert(0, str(Path(__file__).resolve().parent / "python"))
 
-import pandas as pd  # noqa: E402
 import streamlit as st  # noqa: E402
 from streamlit_autorefresh import st_autorefresh  # noqa: E402
 
@@ -30,180 +30,436 @@ import tennis_signal  # noqa: E402
 import trader  # noqa: E402
 from config import merge_with_defaults  # noqa: E402
 
-st.set_page_config(page_title="Kalshi Bot · Online", page_icon="📈", layout="wide")
+st.set_page_config(page_title="Kalshi Bot", page_icon="📈", layout="wide", initial_sidebar_state="expanded")
 
-# ── Dark-neon theming to match the desktop app ──────────────────────
-st.markdown("""
+# ── Design system: the same tokens as the desktop app (tailwind.config + index.css) ──
+CSS = """
 <style>
-:root { color-scheme: dark; }
-.stApp { background: #0A0A0F; }
-h1, h2, h3 { font-family: 'Chakra Petch', sans-serif; letter-spacing: .02em; }
-[data-testid="stMetricValue"] { font-family: 'JetBrains Mono', monospace; }
-.neon { background: linear-gradient(90deg,#6366F1,#A855F7,#EC4899);
-        -webkit-background-clip: text; -webkit-text-fill-color: transparent; font-weight: 700; }
+@import url('https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&family=Press+Start+2P&display=swap');
+:root{ color-scheme:dark;
+ --void:#0A0A0F; --surface:#11111A; --surface2:#171722; --border:rgba(255,255,255,.08);
+ --borderHi:rgba(255,255,255,.16); --muted:#A1A1AA; --dim:#71717A;
+ --indigo:#6366F1; --purple:#A855F7; --pink:#EC4899; --win:#22C55E; --loss:#EF4444; --warn:#F59E0B; }
+.stApp, [data-testid="stAppViewContainer"]{ background:var(--void); }
+[data-testid="stHeader"]{ background:transparent; }
+#MainMenu, footer, [data-testid="stToolbar"]{ visibility:hidden; }
+html, body, [class*="css"]{ font-family:'Chakra Petch',Inter,system-ui,sans-serif; letter-spacing:.01em; color:#fff; }
+.block-container{ padding-top:1.4rem; max-width:1400px; }
+[data-testid="stSidebar"]{ background:var(--void); border-right:1px solid var(--border); }
+[data-testid="stSidebar"] .block-container{ padding-top:1rem; }
+/* brand */
+.k-brand{ font-family:'Press Start 2P',monospace; font-size:13px; line-height:1.5;
+ background:linear-gradient(90deg,#6366F1,#A855F7,#EC4899); -webkit-background-clip:text;
+ -webkit-text-fill-color:transparent; }
+.k-ver{ font-family:'Press Start 2P',monospace; font-size:8px; color:var(--dim); }
+.k-neon{ background:linear-gradient(90deg,#6366F1,#A855F7,#EC4899); -webkit-background-clip:text; -webkit-text-fill-color:transparent; font-weight:700; }
+/* cards */
+.k-card{ border:1px solid var(--border); background:var(--surface); border-radius:12px; padding:18px; }
+.k-label{ font-size:11px; font-weight:500; text-transform:uppercase; letter-spacing:.08em; color:var(--muted); }
+.k-val{ font-family:'JetBrains Mono',monospace; font-size:26px; font-weight:600; margin-top:4px; }
+.k-sub{ font-size:12px; color:var(--dim); margin-top:2px; }
+.k-sect{ font-size:12px; font-weight:600; text-transform:uppercase; letter-spacing:.16em; color:var(--muted); margin:2px 0 10px; }
+.win{ color:var(--win);} .loss{ color:var(--loss);} .warn{ color:var(--warn);} .dim{ color:var(--dim);} .muted{ color:var(--muted);}
+/* pill / badge */
+.k-badge{ display:inline-flex; align-items:center; gap:4px; border-radius:999px; border:1px solid var(--border);
+ background:var(--surface2); padding:2px 9px; font-size:11px; font-weight:600; text-transform:uppercase; letter-spacing:.05em; }
+.b-win{ border-color:rgba(34,197,94,.4); background:rgba(34,197,94,.1); color:var(--win); }
+.b-loss{ border-color:rgba(239,68,68,.4); background:rgba(239,68,68,.1); color:var(--loss); }
+.b-warn{ border-color:rgba(245,158,11,.4); background:rgba(245,158,11,.1); color:var(--warn); }
+.b-info{ border-color:rgba(99,102,241,.4); background:rgba(99,102,241,.1); color:var(--indigo); }
+.b-neutral{ border-color:var(--border); background:var(--surface2); color:var(--muted); }
+/* table */
+table.k-tbl{ width:100%; border-collapse:collapse; font-size:13px; }
+table.k-tbl th{ border-bottom:1px solid var(--border); padding:8px 10px; text-align:left; font-size:11px;
+ font-weight:600; text-transform:uppercase; letter-spacing:.05em; color:var(--muted); }
+table.k-tbl td{ border-bottom:1px solid rgba(255,255,255,.05); padding:8px 10px; color:rgba(255,255,255,.9); }
+table.k-tbl tr:hover td{ background:rgba(255,255,255,.02); }
+.mono{ font-family:'JetBrains Mono',monospace; }
+.chip{ display:inline-block; border-radius:6px; padding:2px 8px; font-family:'JetBrains Mono',monospace; font-weight:600; }
+a.k-link{ color:var(--indigo); text-decoration:none; } a.k-link:hover{ color:var(--purple); text-decoration:underline; }
+/* sidebar radio -> nav */
+[data-testid="stSidebar"] [role="radiogroup"]{ gap:4px; }
+[data-testid="stSidebar"] [role="radiogroup"] label{ padding:8px 12px; border-radius:8px; border:1px solid transparent; width:100%; }
+[data-testid="stSidebar"] [role="radiogroup"] label:hover{ background:rgba(255,255,255,.05); }
+[data-testid="stSidebar"] [role="radiogroup"] label:has(input:checked){ background:var(--surface); border:1px solid var(--border); }
+[data-testid="stSidebar"] [role="radiogroup"] input{ display:none; }
+/* buttons */
+.stButton>button{ border:1px solid var(--border); background:var(--surface2); color:#fff; border-radius:8px; font-weight:500; }
+.stButton>button:hover{ border-color:var(--borderHi); background:rgba(255,255,255,.06); }
+hr{ border-color:var(--border); }
 </style>
-""", unsafe_allow_html=True)
+"""
+st.markdown(CSS, unsafe_allow_html=True)
 
 
-# ── Trading engine — runs ONCE in a background thread ───────────────
+# ── Trading engine (runs ONCE in a background thread) ───────────────
 @st.cache_resource
 def get_engine() -> dict:
+    logs: deque = deque(maxlen=400)
+
+    class _H(logging.Handler):
+        def emit(self, r):
+            try:
+                logs.append({"ts": datetime.now(timezone.utc).isoformat(),
+                             "level": r.levelname, "src": r.name.split(".")[0], "msg": self.format(r)})
+            except Exception:
+                pass
+    h = _H(); h.setFormatter(logging.Formatter("%(message)s"))
+    root = logging.getLogger(); root.setLevel(logging.INFO)
+    if not any(isinstance(x, _H) for x in root.handlers):
+        root.addHandler(h)
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+
+    db.init_db()  # once, synchronously, before the thread or any read touches the DB
     state = {
         "cfg": merge_with_defaults({
-            "paper_trading": True,
-            "tennis_favorite_enabled": True,   # default: your Polymarket strategy
-            "tennis_signal_enabled": False,
-            "crypto_signal_enabled": False,
-            "trade_whales": False,
-            "trade_momentum": True,
-            "main_record_signals": True,
+            "paper_trading": True, "tennis_favorite_enabled": True,
+            "tennis_signal_enabled": False, "crypto_signal_enabled": False,
+            "trade_whales": False, "trade_momentum": True, "main_record_signals": True,
         }),
-        "running": True, "cycles": 0, "started_at": time.time(), "last_error": "",
+        "running": True, "cycles": 0, "started_at": time.time(), "logs": logs,
+        "last_whale": None, "last_tennis": None,
     }
-
-    def worker() -> None:
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        loop.run_until_complete(_run(state))
-
-    threading.Thread(target=worker, daemon=True).start()
+    threading.Thread(target=lambda: _spawn(state), daemon=True).start()
     return state
 
 
-async def _run(state: dict) -> None:
-    """The same loop the desktop backend runs — scans → paper trade → resolve."""
-    db.init_db()
+def _spawn(state):
+    loop = asyncio.new_event_loop(); asyncio.set_event_loop(loop)
+    loop.run_until_complete(_run(state))
+
+
+async def _run(state):
     try:
         await scanner.sync_markets(max_pages=10)
     except Exception as e:  # noqa: BLE001
-        state["last_error"] = f"sync inicial: {e}"
-    last = {k: 0.0 for k in ("market", "whale", "momentum", "crypto", "tennis", "paper", "resolve")}
+        logging.getLogger("service").warning(f"sync inicial: {e}")
+    last = {k: 0.0 for k in ("market", "whale", "momentum", "crypto", "tennis", "paper", "resolve", "snap")}
     while state["running"]:
-        now = time.time()
-        cfg = state["cfg"]
+        now = time.time(); cfg = state["cfg"]
         try:
             if now - last["market"] >= 300:
                 await scanner.sync_markets(10); last["market"] = now
             if now - last["whale"] >= 120:
-                await scanner.scan_whales(cfg); last["whale"] = now
+                n, _ = await scanner.scan_whales(cfg); last["whale"] = now
+                if n:
+                    state["last_whale"] = datetime.now(timezone.utc).isoformat()
             if now - last["momentum"] >= 90:
                 await scanner.scan_momentum(cfg); last["momentum"] = now
             if cfg.get("crypto_signal_enabled") and now - last["crypto"] >= 8:
                 await crypto_signal.scan(cfg); last["crypto"] = now
             if (cfg.get("tennis_signal_enabled") or cfg.get("tennis_favorite_enabled")) and now - last["tennis"] >= 20:
-                await tennis_signal.scan(cfg); last["tennis"] = now
+                n, _ = await tennis_signal.scan(cfg); last["tennis"] = now
+                if n:
+                    state["last_tennis"] = datetime.now(timezone.utc).isoformat()
             if now - last["paper"] >= 20:
                 await trader.paper_scan_for_trades(cfg); last["paper"] = now
             if now - last["resolve"] >= 120:
                 await trader.mark_resolved_positions(cfg); last["resolve"] = now
+            if now - last["snap"] >= 60:
+                with db.get_db() as conn:
+                    stx = db.aggregate_stats(conn, "paper")
+                    cash = trader.paper_available_cash(cfg)
+                    db.insert_pnl_snapshot(conn, cash_usd=cash, portfolio_usd=stx["open_cost"],
+                                           realized_pnl_usd=stx["realized_pnl"], wins=stx["wins"],
+                                           losses=stx["losses"], open_positions=stx["open_filled"], env="paper")
+                last["snap"] = now
             state["cycles"] += 1
         except Exception as e:  # noqa: BLE001
-            state["last_error"] = str(e)[:160]
+            logging.getLogger("service").debug(f"loop: {e}")
         await asyncio.sleep(1)
 
 
 engine = get_engine()
 cfg = engine["cfg"]
 
-# ── Sidebar: strategy controls (same toggles as the app) ────────────
-st.sidebar.markdown("### ⚙️ Estrategia")
-cfg["tennis_favorite_enabled"] = st.sidebar.toggle(
-    "🎾 Tenis favorito 90% (set decisivo)", value=cfg.get("tennis_favorite_enabled", True))
-cfg["tennis_signal_enabled"] = st.sidebar.toggle(
-    "🎾 Tenis en vivo (modelo)", value=cfg.get("tennis_signal_enabled", False))
-cfg["crypto_signal_enabled"] = st.sidebar.toggle(
-    "₿ Cripto spot", value=cfg.get("crypto_signal_enabled", False))
-cfg["trade_whales"] = st.sidebar.toggle(
-    "🐋 Ballenas", value=cfg.get("trade_whales", False))
 
-up = int(time.time() - engine["started_at"])
-st.sidebar.markdown("---")
-st.sidebar.caption(f"▶️ corriendo · {engine['cycles']} ciclos · {up // 3600}h {(up % 3600) // 60}m")
-if engine["last_error"]:
-    st.sidebar.caption(f"⚠️ {engine['last_error']}")
-if st.sidebar.button("🔄 Reiniciar a cero"):
-    db.archive_paper_to_reserve()
-    st.rerun()
+# ── small render helpers ────────────────────────────────────────────
+def usd(n, signed=False):
+    if n is None:
+        return "—"
+    s = f"{abs(n):,.2f}"
+    return f"{'-' if n < 0 else '+' if signed else ''}${s}"
 
-# ── Read the current state from the shared SQLite DB ─────────────────
-env = "paper"
-try:
-    with db.get_db() as conn:
-        stats = db.aggregate_stats(conn, env)
-        markets = db.count_active_markets(conn)
-        prows = conn.execute(
-            "SELECT * FROM bot_positions WHERE kalshi_env='paper' ORDER BY created_at DESC LIMIT 200"
-        ).fetchall()
-        positions = [dict(r) for r in prows]
-except Exception:
-    stats = {"wins": 0, "losses": 0, "gross_win": 0, "gross_loss": 0, "realized_pnl": 0,
+
+def badge(txt, tone="neutral"):
+    return f'<span class="k-badge b-{tone}">{txt}</span>'
+
+
+def statcard(label, value, sub="", tone=""):
+    return (f'<div class="k-card"><div class="k-label">{label}</div>'
+            f'<div class="k-val {tone}">{value}</div>'
+            f'<div class="k-sub">{sub}</div></div>')
+
+
+def timeago(iso):
+    if not iso:
+        return "—"
+    try:
+        s = max(0, int((datetime.now(timezone.utc) - datetime.fromisoformat(iso.replace("Z", "+00:00"))).total_seconds()))
+    except Exception:
+        return "—"
+    if s < 60:
+        return f"hace {s}s"
+    if s < 3600:
+        return f"hace {s // 60}m"
+    if s < 86400:
+        return f"hace {s // 3600}h"
+    return f"hace {s // 86400}d"
+
+
+def fdate(iso):
+    if not iso:
+        return "—"
+    try:
+        d = datetime.fromisoformat(iso.replace("Z", "+00:00"))
+        return d.strftime("%d %b, %H:%M")
+    except Exception:
+        return "—"
+
+
+def market_url(ticker):
+    parts = (ticker or "").split("-")
+    series = parts[0].lower() if parts else ""
+    slug = trader._series_meta_cache.get(parts[0], {}).get("slug", "") if parts else ""
+    if slug and len(parts) >= 2:
+        return f"https://kalshi.com/markets/{series}/{slug}/{'-'.join(parts[:-1]).lower()}"
+    return f"https://kalshi.com/markets/{series}"
+
+
+# ── data ────────────────────────────────────────────────────────────
+def load():
+    try:
+        with db.get_db() as conn:
+            stats = db.aggregate_stats(conn, "paper")
+            markets = db.count_active_markets(conn)
+            pos = [dict(r) for r in conn.execute(
+                "SELECT * FROM bot_positions WHERE kalshi_env='paper' ORDER BY created_at DESC LIMIT 300").fetchall()]
+            whales = [dict(r) for r in conn.execute(
+                "SELECT * FROM whale_trades ORDER BY created_at DESC LIMIT 100").fetchall()]
+            alerts = [dict(r) for r in conn.execute(
+                "SELECT * FROM alerts ORDER BY created_at DESC LIMIT 100").fetchall()]
+            snaps = db.get_pnl_snapshots(conn, since_hours=168, env="paper")
+        return stats, markets, pos, whales, alerts, snaps
+    except Exception:
+        z = {"wins": 0, "losses": 0, "gross_win": 0, "gross_loss": 0, "realized_pnl": 0,
              "open_cost": 0, "open_filled": 0, "pending": 0, "fees": 0}
-    markets, positions = 0, []
+        return z, 0, [], [], [], []
 
+
+stats, markets, positions, whales, alerts, snaps = load()
 bankroll = float(cfg.get("paper_bankroll_usd", 1000.0))
 try:
     cash = trader.paper_available_cash(cfg)
 except Exception:
     cash = bankroll
-open_mtm = 0.0
-for p in positions:
-    if not p.get("resolved") and (p.get("filled_contracts") or 0) > 0 and p.get("mark_price_cents") is not None:
-        open_mtm += p["filled_contracts"] * float(p["mark_price_cents"]) / 100.0
-    elif not p.get("resolved"):
-        open_mtm += float(p.get("cost_usd") or 0)
+open_mtm = sum((p["filled_contracts"] * float(p["mark_price_cents"]) / 100.0)
+               if (not p.get("resolved") and p.get("filled_contracts") and p.get("mark_price_cents") is not None)
+               else (float(p.get("cost_usd") or 0) if not p.get("resolved") else 0.0) for p in positions)
 equity = cash + open_mtm
 wl = stats["wins"] + stats["losses"]
+open_ct = stats["open_filled"] + stats["pending"]
 
-# ── Header + metrics ────────────────────────────────────────────────
-st.markdown('<h1><span class="neon">KALSHI BOT</span> · Paper Trading (online)</h1>', unsafe_allow_html=True)
-st.caption("Misma lógica que la app de escritorio · sin claves · dinero virtual · seguro para dejar corriendo")
 
-m = st.columns(6)
-m[0].metric("Balance", f"${equity:,.2f}", f"{equity - bankroll:+.2f}")
-m[1].metric("P&L realizado", f"${stats['realized_pnl']:+.2f}")
-m[2].metric("Ganadas", stats["wins"], f"+${stats['gross_win']:.2f}")
-m[3].metric("Perdidas", stats["losses"], f"-${abs(stats['gross_loss']):.2f}")
-m[4].metric("Acierto", f"{stats['wins'] / wl * 100:.0f}%" if wl else "—")
-m[5].metric("Abiertas", stats["open_filled"] + stats["pending"])
+# ── sidebar (brand + nav + status, like the desktop) ────────────────
+with st.sidebar:
+    st.markdown('<div class="k-brand">KALSHI BOT</div><div class="k-ver">v1.0.0 · online</div><br>', unsafe_allow_html=True)
+    page = st.radio("nav", ["📊  Panel", "📡  Señales", "💼  Posiciones", "⚙️  Ajustes", "📜  Registros"],
+                    label_visibility="collapsed")
+    st.markdown("<hr>", unsafe_allow_html=True)
+    up = int(time.time() - engine["started_at"])
+    dot = "🟢" if engine["cycles"] > 0 else "🟡"
+    st.markdown(f'<div class="k-sub">{dot} corriendo · {engine["cycles"]} ciclos · {up//3600}h {(up%3600)//60}m</div>',
+                unsafe_allow_html=True)
+    st.markdown('<div class="k-sub">Local · dinero virtual, sin claves</div>', unsafe_allow_html=True)
 
-# ── Positions table ─────────────────────────────────────────────────
-st.markdown("### Posiciones")
-if positions:
-    def _estado(p: dict) -> str:
+
+# ── top bar (badges) ────────────────────────────────────────────────
+active = []
+if cfg.get("tennis_favorite_enabled"):
+    active.append("🎾 favorito")
+if cfg.get("tennis_signal_enabled"):
+    active.append("🎾 modelo")
+if cfg.get("crypto_signal_enabled"):
+    active.append("₿ cripto")
+if cfg.get("trade_whales"):
+    active.append("🐋 ballenas")
+topbar = badge("DEMO", "info") + " " + badge("PAPER · simulación", "neutral") + " " + \
+    badge("operando en vivo" if active else "en pausa", "win" if active else "neutral")
+st.markdown(f'<div style="display:flex;gap:8px;margin-bottom:10px">{topbar}</div>', unsafe_allow_html=True)
+
+PAGE = page.split("  ", 1)[-1]
+
+# ══════════════════════════ PANEL ══════════════════════════════════
+if PAGE == "Panel":
+    st.markdown('<h2 class="k-neon" style="margin:0 0 6px">Panel</h2>', unsafe_allow_html=True)
+    c = st.columns(4)
+    with c[0]:
+        st.markdown(statcard("Balance total", usd(equity), f"efectivo {usd(cash)}"), unsafe_allow_html=True)
+    with c[1]:
+        st.markdown(statcard("P&L realizado", usd(stats["realized_pnl"], True),
+                             f"comisiones {usd(stats['fees'])}", "win" if stats["realized_pnl"] >= 0 else "loss"),
+                    unsafe_allow_html=True)
+    with c[2]:
+        st.markdown(statcard("Tasa de acierto", f"{stats['wins']/wl*100:.0f}%" if wl else "—",
+                             f"{stats['wins']}G · {stats['losses']}P"), unsafe_allow_html=True)
+    with c[3]:
+        st.markdown(statcard("Posiciones abiertas", str(open_ct), f"{stats['pending']} pendientes"), unsafe_allow_html=True)
+
+    st.markdown("<br>", unsafe_allow_html=True)
+    g = st.columns([2, 1])
+    with g[0]:
+        st.markdown('<div class="k-sect">Balance (7 días)</div>', unsafe_allow_html=True)
+        if len(snaps) > 1:
+            import pandas as pd
+            df = pd.DataFrame({"t": [datetime.fromisoformat(s["at"].replace("Z", "+00:00")) for s in snaps],
+                               "Total": [float(s["total_usd"] or 0) for s in snaps]}).set_index("t")
+            st.line_chart(df, height=220, color="#A855F7")
+        else:
+            st.markdown('<div class="k-card dim">Aún no hay datos suficientes — se acumulan mientras corre.</div>',
+                        unsafe_allow_html=True)
+    with g[1]:
+        st.markdown('<div class="k-sect">¿Por qué no opera?</div>', unsafe_allow_html=True)
+        checks = [("Paper trading (sin clave)", True),
+                  ("Algún motor activo", bool(active)),
+                  ("Mercados sincronizados", markets > 0)]
+        rws = ""
+        for lbl, ok in checks:
+            icon = "✅" if ok else "❌"
+            cls = "" if ok else "muted"
+            rws += f'<div style="margin:6px 0">{icon} <span class="{cls}">{lbl}</span></div>'
+        st.markdown(f'<div class="k-card">{rws}</div>', unsafe_allow_html=True)
+        st.markdown(f'<div class="k-card" style="margin-top:10px"><div class="k-label">Escáner</div>'
+                    f'<div class="k-sub" style="margin-top:6px">{markets} mercados · {len(whales)} ballenas · {len(alerts)} señales</div></div>',
+                    unsafe_allow_html=True)
+
+# ══════════════════════════ SEÑALES ═══════════════════════════════
+elif PAGE == "Señales":
+    st.markdown('<h2 class="k-neon" style="margin:0 0 6px">Señales</h2>', unsafe_allow_html=True)
+    sig = []
+    for r in whales:
+        pc = int(round(float(r.get("price") or 0) * 100))
+        sig.append((r.get("created_at"), "ballena", r.get("title") or r.get("ticker"),
+                    (r.get("taker_side") or "yes").upper(), pc, float(r.get("confidence") or 0)))
+    for r in alerts:
+        d = (r.get("direction") or "yes")
+        yc = int(round(float(r.get("price") or 0) * 100))
+        cc = yc if d == "yes" else max(0, 100 - yc)
+        lbl = "tenis" if (r.get("signal_type") or "").startswith("tennis") else "momentum"
+        sig.append((r.get("created_at"), lbl, r.get("title") or r.get("ticker"), d.upper(), cc, float(r.get("confidence") or 0)))
+    sig.sort(key=lambda x: x[0] or "", reverse=True)
+    if sig:
+        body = "".join(
+            f'<tr><td class="dim">{timeago(t)}</td><td>{badge(src,"info" if src in("ballena","tenis") else "neutral")}</td>'
+            f'<td>{(title or "")[:44]}</td><td>{side}</td><td class="mono">{pc}¢</td><td class="mono">{conf:.0f}</td></tr>'
+            for t, src, title, side, pc, conf in sig[:120])
+        st.markdown(f'<div class="k-card" style="padding:0;overflow-x:auto"><table class="k-tbl">'
+                    f'<thead><tr><th>Cuándo</th><th>Fuente</th><th>Mercado</th><th>Lado</th><th>Precio</th><th>Conf</th></tr></thead>'
+                    f'<tbody>{body}</tbody></table></div>', unsafe_allow_html=True)
+    else:
+        st.markdown('<div class="k-card dim">Sin señales aún — el escáner detecta ballenas y señales en vivo.</div>',
+                    unsafe_allow_html=True)
+
+# ══════════════════════════ POSICIONES ════════════════════════════
+elif PAGE == "Posiciones":
+    st.markdown('<h2 class="k-neon" style="margin:0 0 6px">Posiciones</h2>', unsafe_allow_html=True)
+    gw, gl = stats["gross_win"], abs(stats["gross_loss"])
+    c = st.columns(4)
+    c[0].markdown(statcard("Ganadas", str(stats["wins"]), usd(gw, True), "win"), unsafe_allow_html=True)
+    c[1].markdown(statcard("Perdidas", str(stats["losses"]), "-" + usd(gl), "loss"), unsafe_allow_html=True)
+    c[2].markdown(statcard("Abiertas", str(open_ct), "en juego"), unsafe_allow_html=True)
+    c[3].markdown(statcard("Neto", usd(stats["realized_pnl"], True),
+                           f"{stats['wins']/wl*100:.0f}% acierto" if wl else "—",
+                           "win" if stats["realized_pnl"] >= 0 else "loss"), unsafe_allow_html=True)
+    tot = gw + gl
+    if tot > 0:
+        pctw = gw / tot * 100
+        st.markdown(f'<div style="margin:12px 0"><div style="display:flex;justify-content:space-between;font-size:12px">'
+                    f'<span class="win">Ganado {usd(gw)}</span><span class="loss">Perdido {usd(gl)}</span></div>'
+                    f'<div style="display:flex;height:10px;border-radius:999px;overflow:hidden;background:var(--surface2);margin-top:4px">'
+                    f'<div style="width:{pctw}%;background:var(--win)"></div><div style="width:{100-pctw}%;background:var(--loss)"></div>'
+                    f'</div></div>', unsafe_allow_html=True)
+
+    def estado(p):
         if p.get("status") == "stopped":
-            return "cortada ✂"
+            return badge("cortada ✂", "loss")
         if p.get("resolved"):
-            return "ganada ✓" if p.get("outcome_correct") == 1 else "perdida ✗"
-        return p.get("status") or "—"
+            return badge("ganada ✓", "win") if p.get("outcome_correct") == 1 else badge("perdida ✗", "loss")
+        m = {"filled": "info", "partial": "warn", "submitted": "warn", "error": "loss", "canceled": "loss"}
+        return badge(p.get("status") or "—", m.get(p.get("status"), "neutral"))
 
-    def _pnl(p: dict):
-        v = p.get("pnl_usd") if p.get("resolved") else None
-        return None if v is None else round(v, 2)
+    if positions:
+        rows = ""
+        for p in positions:
+            if p.get("resolved"):
+                pnl = p.get("pnl_usd")
+            elif p.get("mark_price_cents") is not None and p.get("filled_contracts"):
+                pnl = round(p["filled_contracts"] * float(p["mark_price_cents"]) / 100.0 - float(p.get("cost_usd") or 0), 2)
+            else:
+                pnl = None
+            up = (pnl or 0) >= 0
+            rgb = "34,197,94" if up else "239,68,68"
+            tone = "win" if up else "loss"
+            pnl_html = '<span class="dim">—</span>' if pnl is None else \
+                f'<span class="chip" style="background:rgba({rgb},.15);color:var(--{tone})">{usd(pnl,True)}</span>'
+            tint = "" if pnl is None else f'background:rgba({rgb},{".10" if p.get("resolved") else ".04"})'
+            mkt = (p.get("event_title") or p.get("title") or p.get("ticker") or "")[:32]
+            rows += (f'<tr style="{tint}"><td class="dim">{timeago(p.get("created_at"))}</td>'
+                     f'<td>{badge(p.get("mtype") or "—","info") if p.get("mtype") and p.get("mtype")!="—" else "—"}</td>'
+                     f'<td><a class="k-link" href="{market_url(p.get("ticker"))}" target="_blank">{mkt} ↗</a></td>'
+                     f'<td>{(p.get("yes_label") or "—")[:24]}</td><td>{(p.get("direction") or "").upper()}</td>'
+                     f'<td class="dim">{fdate(p.get("resolved_at") if p.get("resolved") else p.get("close_time"))}</td>'
+                     f'<td class="mono">{p.get("filled_contracts",0)}/{p.get("target_contracts",0)}</td>'
+                     f'<td class="mono">{p.get("limit_price_cents",0)}¢</td>'
+                     f'<td class="mono dim">{usd(p.get("cost_usd") or 0)}</td><td>{pnl_html}</td><td>{estado(p)}</td></tr>')
+        st.markdown(f'<div class="k-card" style="padding:0;overflow-x:auto"><table class="k-tbl"><thead><tr>'
+                    f'<th>Abierta</th><th>Tipo</th><th>Mercado</th><th>Puesta</th><th>Lado</th><th>Cierre</th>'
+                    f'<th>Ejec.</th><th>Precio</th><th>Costo</th><th>P&L</th><th>Estado</th></tr></thead>'
+                    f'<tbody>{rows}</tbody></table></div>', unsafe_allow_html=True)
+    else:
+        st.markdown('<div class="k-card dim">Sin posiciones aún — con la estrategia de favorito solo entra en un '
+                    'partido de hombres en set decisivo con un favorito ≥90%.</div>', unsafe_allow_html=True)
+    st.markdown("<br>", unsafe_allow_html=True)
+    if st.button("🗑  Reiniciar a cero (archiva a reserva)"):
+        db.archive_paper_to_reserve()
+        st.rerun()
 
-    df = pd.DataFrame([{
-        "Tipo": p.get("mtype") or "—",
-        "Mercado": (p.get("event_title") or p.get("title") or p.get("ticker") or "")[:34],
-        "Puesta": (p.get("yes_label") or "")[:26],
-        "Lado": (p.get("direction") or "").upper(),
-        "Precio": f"{p.get('limit_price_cents', 0)}c",
-        "Costo": f"${float(p.get('cost_usd') or 0):.2f}",
-        "P&L": _pnl(p),
-        "Estado": _estado(p),
-    } for p in positions])
+# ══════════════════════════ AJUSTES ═══════════════════════════════
+elif PAGE == "Ajustes":
+    st.markdown('<h2 class="k-neon" style="margin:0 0 6px">Ajustes</h2>', unsafe_allow_html=True)
+    st.markdown('<div class="k-sect">Motores predictivos (experimental)</div>', unsafe_allow_html=True)
+    st.caption("Generan su propia probabilidad desde una fuente en vivo y la comparan con Kalshi. Aplican al toque.")
+    cfg["tennis_favorite_enabled"] = st.toggle(
+        "🎾 Tenis favorito 90% (set decisivo) — apuesta al favorito del mercado en el 3er set, solo hombres.",
+        value=cfg.get("tennis_favorite_enabled", True))
+    cfg["tennis_signal_enabled"] = st.toggle(
+        "🎾 Tenis en vivo (modelo) — estima probabilidad del marcador y busca rezagos del mercado.",
+        value=cfg.get("tennis_signal_enabled", False))
+    cfg["crypto_signal_enabled"] = st.toggle(
+        "₿ Cripto spot — sigue el precio spot y opera los mercados de 15 min cuando Kalshi va rezagado.",
+        value=cfg.get("crypto_signal_enabled", False))
+    cfg["trade_whales"] = st.toggle(
+        "🐋 Ballenas — copia órdenes grandes (sin edge probado, tiende a perder).",
+        value=cfg.get("trade_whales", False))
+    st.markdown("<hr>", unsafe_allow_html=True)
+    st.markdown('<div class="k-sect">Riesgo</div>', unsafe_allow_html=True)
+    cfg["hard_max_position_usd"] = st.slider("Posición máxima ($)", 5, 50, int(cfg.get("hard_max_position_usd", 12)))
+    cfg["stop_loss_on_day"] = st.slider("Stop-loss diario ($)", -300, -10, int(cfg.get("stop_loss_on_day", -200)))
+    st.caption("Los cambios se aplican en vivo al motor. Modo paper — dinero virtual.")
 
-    def _color(v):
-        if isinstance(v, (int, float)):
-            return "color:#22C55E" if v >= 0 else "color:#EF4444"
-        return ""
-    st.dataframe(
-        df.style.map(_color, subset=["P&L"]).format({"P&L": lambda v: "—" if v is None else f"${v:+.2f}"}),
-        use_container_width=True, hide_index=True, height=430,
-    )
-else:
-    st.info("Sin posiciones aún — el bot está escaneando. Con la estrategia de favorito, "
-            "solo entra cuando hay un partido de hombres en set decisivo con un favorito ≥90%.")
+# ══════════════════════════ REGISTROS ═════════════════════════════
+elif PAGE == "Registros":
+    st.markdown('<h2 class="k-neon" style="margin:0 0 6px">Registros</h2>', unsafe_allow_html=True)
+    logs = list(engine["logs"])[-200:][::-1]
+    if logs:
+        lvl = {"ERROR": "loss", "WARNING": "warn", "INFO": "muted", "DEBUG": "dim"}
+        body = "".join(
+            f'<div class="mono" style="font-size:12px;margin:2px 0"><span class="dim">{fdate(l["ts"])}</span> '
+            f'<span class="{lvl.get(l["level"],"muted")}">{l["level"][:4]}</span> '
+            f'<span style="color:var(--purple)">{l["src"]}</span> <span style="color:rgba(255,255,255,.8)">{l["msg"]}</span></div>'
+            for l in logs)
+        st.markdown(f'<div class="k-card" style="max-height:560px;overflow-y:auto">{body}</div>', unsafe_allow_html=True)
+    else:
+        st.markdown('<div class="k-card dim">Sin registros aún.</div>', unsafe_allow_html=True)
 
-st.caption(f"Mercados en vivo: {markets} · comisiones acumuladas: ${stats['fees']:.2f}")
-
-# Keep the app awake + live (refresh every 6s while the tab is open).
 st_autorefresh(interval=6000, key="refresh")
