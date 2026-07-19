@@ -426,26 +426,85 @@ elif PAGE == "Posiciones":
 
 # ══════════════════════════ AJUSTES ═══════════════════════════════
 elif PAGE == "Ajustes":
-    st.markdown('<h2 class="k-neon" style="margin:0 0 6px">Ajustes</h2>', unsafe_allow_html=True)
-    st.markdown('<div class="k-sect">Motores predictivos (experimental)</div>', unsafe_allow_html=True)
-    st.caption("Generan su propia probabilidad desde una fuente en vivo y la comparan con Kalshi. Aplican al toque.")
-    cfg["tennis_favorite_enabled"] = st.toggle(
-        "🎾 Tenis favorito 90% (set decisivo) — apuesta al favorito del mercado en el 3er set, solo hombres.",
-        value=cfg.get("tennis_favorite_enabled", True))
-    cfg["tennis_signal_enabled"] = st.toggle(
-        "🎾 Tenis en vivo (modelo) — estima probabilidad del marcador y busca rezagos del mercado.",
-        value=cfg.get("tennis_signal_enabled", False))
-    cfg["crypto_signal_enabled"] = st.toggle(
-        "₿ Cripto spot — sigue el precio spot y opera los mercados de 15 min cuando Kalshi va rezagado.",
-        value=cfg.get("crypto_signal_enabled", False))
-    cfg["trade_whales"] = st.toggle(
-        "🐋 Ballenas — copia órdenes grandes (sin edge probado, tiende a perder).",
-        value=cfg.get("trade_whales", False))
+    hcol = st.columns([3, 1])
+    hcol[0].markdown('<h2 class="k-neon" style="margin:0">Ajustes del motor</h2>', unsafe_allow_html=True)
+    if hcol[1].button("↺ Restablecer"):
+        cfg.update(merge_with_defaults({"paper_trading": True, "trade_momentum": True}))
+        cfg["strategy_preset"] = "Conservadora"
+        st.rerun()
+
+    _RISK = dict(min_entry_price_cents=30, max_entry_price_cents=55, min_edge_pts_whale=6,
+                 min_edge_pts_momentum=6, min_confidence_whale=55, min_confidence_momentum=55,
+                 hard_max_position_usd=12, max_total_exposure_fraction=0.20, stop_loss_on_day=-30)
+    PRESETS = {
+        "Conservadora": {**_RISK, "min_whale_usd": 500, "max_resolution_hours": 0},
+        "Horizonte corto (test rápido)": {**_RISK, "min_edge_pts_whale": 3, "min_edge_pts_momentum": 3,
+                                          "min_confidence_whale": 50, "min_confidence_momentum": 50,
+                                          "max_entry_price_cents": 60, "min_whale_usd": 300, "max_resolution_hours": 8},
+        "Agresiva (solo demo)": dict(min_entry_price_cents=15, max_entry_price_cents=85, min_edge_pts_whale=0,
+                                     min_edge_pts_momentum=0, min_confidence_whale=30, min_confidence_momentum=30,
+                                     hard_max_position_usd=50, max_total_exposure_fraction=0.35, stop_loss_on_day=-50,
+                                     min_whale_usd=300, max_resolution_hours=0),
+    }
+    st.markdown('<div class="k-sect">🧪 Preset de estrategia</div>', unsafe_allow_html=True)
+    st.caption("Aplican un paquete de parámetros de una vez. El preset activo se muestra abajo.")
+    pc = st.columns(3)
+    for i, (name, bundle) in enumerate(PRESETS.items()):
+        if pc[i].button(("✓ " if cfg.get("strategy_preset") == name else "") + name, use_container_width=True):
+            cfg.update(bundle); cfg["strategy_preset"] = name; st.rerun()
+    st.caption(f"Preset activo: **{cfg.get('strategy_preset', '—')}** · cambiar un valor manual no altera el nombre.")
+
     st.markdown("<hr>", unsafe_allow_html=True)
-    st.markdown('<div class="k-sect">Riesgo</div>', unsafe_allow_html=True)
-    cfg["hard_max_position_usd"] = st.slider("Posición máxima ($)", 5, 50, int(cfg.get("hard_max_position_usd", 12)))
-    cfg["stop_loss_on_day"] = st.slider("Stop-loss diario ($)", -300, -10, int(cfg.get("stop_loss_on_day", -200)))
-    st.caption("Los cambios se aplican en vivo al motor. Modo paper — dinero virtual.")
+    st.markdown('<div class="k-sect">Entorno</div>', unsafe_allow_html=True)
+    st.markdown(badge("DEMO / PAPER", "info"), unsafe_allow_html=True)
+    st.caption("La versión online es **paper** (dinero virtual, sin claves). Producción/real solo en la app de escritorio con tus claves.")
+
+    st.markdown("<hr>", unsafe_allow_html=True)
+    st.markdown('<div class="k-sect">Motores de señal</div>', unsafe_allow_html=True)
+    cfg["trade_whales"] = st.toggle("Operar ballenas — actuar sobre órdenes grandes del feed.", value=cfg.get("trade_whales", False))
+    cfg["trade_momentum"] = st.toggle("Operar momentum — actuar sobre clústeres de volumen/precio.", value=cfg.get("trade_momentum", True))
+    cfg["contrarian_only"] = st.toggle("Solo contrarian — ir contra la multitud en momentum.", value=cfg.get("contrarian_only", True))
+    cfg["fee_aware_edge"] = st.toggle("Edge neto de comisiones — restar la comisión antes del filtro de edge.", value=cfg.get("fee_aware_edge", True))
+
+    st.markdown("<hr>", unsafe_allow_html=True)
+    st.markdown('<div class="k-sect">🧪 Motores predictivos (experimental)</div>', unsafe_allow_html=True)
+    st.caption("Generan su propia probabilidad desde una fuente en vivo y la comparan con el precio de Kalshi. Aplican al toque.")
+    cfg["tennis_favorite_enabled"] = st.toggle("🎾 Tenis favorito 90% (set decisivo) — apuesta al favorito del mercado en el 3er set, solo hombres.", value=cfg.get("tennis_favorite_enabled", True))
+    cfg["tennis_signal_enabled"] = st.toggle("🎾 Tenis en vivo (modelo) — estima probabilidad del marcador y busca rezagos del mercado.", value=cfg.get("tennis_signal_enabled", False))
+    cfg["crypto_signal_enabled"] = st.toggle("₿ Cripto spot (BTC/ETH/SOL) — sigue el spot y opera los 15 min cuando Kalshi va rezagado.", value=cfg.get("crypto_signal_enabled", False))
+    st.markdown('<div class="k-sub warn" style="margin-top:6px">⚠️ Experimentales, sin edge probado. Mantienen los controles de riesgo (tamaño chico, stop diario, 1 por evento).</div>', unsafe_allow_html=True)
+
+    st.markdown("<hr>", unsafe_allow_html=True)
+    st.markdown('<div class="k-sect">Filtros de calidad</div>', unsafe_allow_html=True)
+    q = st.columns(3)
+    cfg["min_whale_usd"] = q[0].number_input("$ mínimo ballena", value=float(cfg.get("min_whale_usd", 500)), step=100.0)
+    cfg["min_confidence_whale"] = q[1].number_input("Confianza mínima (ballena)", value=float(cfg.get("min_confidence_whale", 55)), step=1.0)
+    cfg["min_confidence_momentum"] = q[2].number_input("Confianza mínima (momentum)", value=float(cfg.get("min_confidence_momentum", 55)), step=1.0)
+    cfg["min_edge_pts_whale"] = q[0].number_input("Edge mínimo pts (ballena)", value=float(cfg.get("min_edge_pts_whale", 6)), step=1.0)
+    cfg["min_edge_pts_momentum"] = q[1].number_input("Edge mínimo pts (momentum)", value=float(cfg.get("min_edge_pts_momentum", 6)), step=1.0)
+    cfg["min_market_volume"] = q[2].number_input("Volumen mínimo de mercado", value=float(cfg.get("min_market_volume", 100)), step=50.0)
+    cfg["min_entry_price_cents"] = q[0].number_input("Precio entrada mín (¢)", value=int(cfg.get("min_entry_price_cents", 30)), step=1)
+    cfg["max_entry_price_cents"] = q[1].number_input("Precio entrada máx (¢)", value=int(cfg.get("max_entry_price_cents", 55)), step=1)
+    cfg["max_resolution_days"] = q[2].number_input("Horizonte máx (días)", value=int(cfg.get("max_resolution_days", 30)), step=1)
+
+    st.markdown("<hr>", unsafe_allow_html=True)
+    st.markdown('<div class="k-sect">Tamaño de posición</div>', unsafe_allow_html=True)
+    cfg["sizing_mode"] = st.radio("Modo de tamaño", ["percent", "fixed"],
+                                  index=0 if cfg.get("sizing_mode", "percent") == "percent" else 1, horizontal=True)
+    s = st.columns(2)
+    cfg["fixed_trade_usd"] = s[0].number_input("$ por operación (fijo)", value=float(cfg.get("fixed_trade_usd", 5)), step=1.0)
+    cfg["hard_max_position_usd"] = s[1].number_input("$ máximo por posición", value=float(cfg.get("hard_max_position_usd", 12)), step=1.0)
+
+    st.markdown("<hr>", unsafe_allow_html=True)
+    st.markdown('<div class="k-sect">Concurrencia y riesgo</div>', unsafe_allow_html=True)
+    r = st.columns(2)
+    cfg["max_open_positions"] = r[0].number_input("Máx. posiciones abiertas", value=int(cfg.get("max_open_positions", 25)), step=1)
+    cfg["max_daily_new_positions"] = r[1].number_input("Máx. nuevas posiciones/día", value=int(cfg.get("max_daily_new_positions", 40)), step=1)
+    cfg["max_total_exposure_fraction"] = r[0].number_input("Exposición total máx (fracción)", value=float(cfg.get("max_total_exposure_fraction", 0.20)), step=0.05, format="%.2f")
+    cfg["max_positions_per_event"] = r[1].number_input("Máx. por evento", value=int(cfg.get("max_positions_per_event", 1)), step=1)
+    cfg["stop_loss_on_day"] = r[0].number_input("Stop-loss diario $ (negativo lo arma)", value=float(cfg.get("stop_loss_on_day", -30)), step=5.0)
+    cfg["take_profit_on_day"] = r[1].number_input("Take-profit diario $ (0 = off)", value=float(cfg.get("take_profit_on_day", 0)), step=5.0)
+    st.caption("Todos los cambios se aplican **en vivo** al motor. Modo paper — dinero virtual.")
 
 # ══════════════════════════ REGISTROS ═════════════════════════════
 elif PAGE == "Registros":
