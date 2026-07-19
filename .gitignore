@@ -1,0 +1,15 @@
+node_modules/
+dist/
+dist-electron/
+release/
+python/.venv/
+python/data/
+python/logs/
+python/__pycache__/
+**/__pycache__/
+*.log
+.DS_Store
+
+# NEVER commit credentials or the RSA private key
+credentials/
+*.pem

@@ -1,0 +1,7 @@
+# Root requirements for the Streamlit Cloud deployment (streamlit_app.py).
+# The desktop backend deps live in python/requirements.txt.
+streamlit>=1.30
+streamlit-autorefresh>=1.0.1
+pandas>=2.0
+httpx>=0.28.0
+cryptography>=42.0.0

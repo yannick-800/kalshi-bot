@@ -1,0 +1,69 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: dark;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  width: 100%;
+  margin: 0;
+  padding: 0;
+  background: #0a0a0f;
+  overflow: hidden;
+}
+
+body {
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  font-family: 'Chakra Petch', Inter, system-ui, sans-serif;
+  letter-spacing: 0.01em;
+  color: #fff;
+}
+
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-track { background: rgba(255, 255, 255, 0.02); }
+::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.08); border-radius: 999px; }
+::-webkit-scrollbar-thumb:hover { background: rgba(255, 255, 255, 0.16); }
+
+input, textarea, select, button { font-family: inherit; }
+
+.titlebar-drag { -webkit-app-region: drag; }
+.titlebar-no-drag { -webkit-app-region: no-drag; }
+
+@layer components {
+  .kbot-card { @apply rounded-xl border border-kbot-border bg-kbot-surface p-5; }
+  .kbot-card-hover { @apply transition-colors hover:border-kbot-borderHi; }
+  .kbot-input {
+    @apply w-full rounded-md border border-kbot-border bg-kbot-surface2 px-3 py-2 text-sm text-white outline-none transition-colors placeholder:text-kbot-dim focus:border-kbot-indigo;
+  }
+  .kbot-label { @apply mb-1 block text-xs font-medium uppercase tracking-wider text-kbot-muted; }
+  .kbot-help { @apply mt-1 text-xs text-kbot-dim; }
+  .kbot-btn {
+    @apply inline-flex select-none items-center justify-center gap-2 rounded-md border border-kbot-border px-3 py-2 text-sm font-medium text-white transition-colors disabled:cursor-not-allowed disabled:opacity-50;
+  }
+  .kbot-btn-default { @apply kbot-btn bg-kbot-surface2 hover:border-kbot-borderHi hover:bg-white/5; }
+  .kbot-btn-primary {
+    @apply kbot-btn border-transparent bg-gradient-to-r from-kbot-indigo via-kbot-purple to-kbot-pink shadow-kbot-soft hover:shadow-kbot-strong;
+  }
+  .kbot-btn-danger {
+    @apply kbot-btn border-kbot-loss/40 bg-kbot-loss/10 text-kbot-loss hover:border-kbot-loss hover:bg-kbot-loss/15;
+  }
+  .kbot-btn-ghost { @apply kbot-btn border-transparent bg-transparent hover:bg-white/5; }
+  .kbot-pill {
+    @apply inline-flex items-center gap-1 rounded-full border border-kbot-border bg-kbot-surface2 px-2 py-0.5 text-[11px] font-medium uppercase tracking-wider;
+  }
+  .kbot-section-title {
+    @apply mb-4 flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.16em] text-kbot-muted;
+  }
+  .kbot-table { @apply w-full text-sm; }
+  .kbot-table th {
+    @apply border-b border-kbot-border px-3 py-2 text-left text-[11px] font-semibold uppercase tracking-wider text-kbot-muted;
+  }
+  .kbot-table td { @apply border-b border-kbot-border/50 px-3 py-2 text-white/90; }
+  .kbot-table tr:hover td { @apply bg-white/[0.02]; }
+}
