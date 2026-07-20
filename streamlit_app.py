@@ -13,6 +13,7 @@ import os
 import sys
 import threading
 import time
+import zlib
 from collections import deque
 from datetime import datetime, timezone
 from pathlib import Path
@@ -54,7 +55,7 @@ html, body, [class*="css"]{ font-family:'Chakra Petch',Inter,system-ui,sans-seri
  background:linear-gradient(90deg,#6366F1,#A855F7,#EC4899); -webkit-background-clip:text;
  -webkit-text-fill-color:transparent; }
 .k-ver{ font-family:'Press Start 2P',monospace; font-size:8px; color:var(--dim); }
-.k-neon{ background:linear-gradient(90deg,#6366F1,#A855F7,#EC4899); -webkit-background-clip:text; -webkit-text-fill-color:transparent; font-weight:700; }
+.k-neon{ color:#FFFFFF; -webkit-text-fill-color:#FFFFFF; font-weight:700; }
 /* cards */
 .k-card{ border:1px solid var(--border); background:var(--surface); border-radius:12px; padding:18px; }
 .k-label{ font-size:11px; font-weight:500; text-transform:uppercase; letter-spacing:.08em; color:var(--muted); }
@@ -186,6 +187,29 @@ def usd(n, signed=False):
 
 def badge(txt, tone="neutral"):
     return f'<span class="k-badge b-{tone}">{txt}</span>'
+
+
+# One stable colour per market type, all bright enough to read on the black
+# background. Known tickers get their brand colour; anything else (Kalshi
+# series tags) hashes into the palette so the same type always looks the same.
+_MTYPE_COLORS = {"BTC": "#F7931A", "ETH": "#7C86FF", "SOL": "#14F195",
+                 "XRP": "#38BDF8", "DOGE": "#E8B923", "TENNIS": "#A3E635"}
+# No palette colour repeats one above, so an explicit type never collides.
+_TYPE_PALETTE = ("#22D3EE", "#F472B6", "#FB923C", "#818CF8", "#34D399",
+                 "#E879F9", "#60A5FA", "#F87171", "#2DD4BF", "#C084FC",
+                 "#FDA4AF", "#4ADE80", "#93C5FD", "#FCA5A5", "#5EEAD4",
+                 "#D8B4FE", "#67E8F9", "#BEF264")
+
+
+def type_badge(t):
+    if not t or str(t).strip() in ("", "—"):
+        return '<span class="dim">—</span>'
+    key = str(t).strip().upper()
+    col = _MTYPE_COLORS.get(key) or _TYPE_PALETTE[zlib.crc32(key.encode()) % len(_TYPE_PALETTE)]
+    h = col.lstrip("#")
+    rgb = f"{int(h[0:2],16)},{int(h[2:4],16)},{int(h[4:6],16)}"
+    return (f'<span class="k-badge" style="border-color:rgba({rgb},.45);'
+            f'background:rgba({rgb},.13);color:{col}">{t}</span>')
 
 
 def statcard(label, value, sub="", tone=""):
@@ -401,7 +425,7 @@ elif PAGE == "Posiciones":
             return badge("cortada ✂", "loss")
         if p.get("resolved"):
             return badge("ganada ✓", "win") if p.get("outcome_correct") == 1 else badge("perdida ✗", "loss")
-        m = {"filled": "info", "partial": "warn", "submitted": "warn", "error": "loss", "canceled": "loss"}
+        m = {"filled": "warn", "partial": "warn", "submitted": "info", "error": "loss", "canceled": "loss"}
         es = {"filled": "en curso", "partial": "parcial", "submitted": "enviada",
               "error": "error", "canceled": "cancelada"}
         s = p.get("status")
@@ -424,7 +448,7 @@ elif PAGE == "Posiciones":
             tint = "" if pnl is None else f'background:rgba({rgb},{".10" if p.get("resolved") else ".04"})'
             mkt = (p.get("event_title") or p.get("title") or p.get("ticker") or "")[:32]
             rows += (f'<tr style="{tint}"><td class="dim">{timeago(p.get("created_at"))}</td>'
-                     f'<td>{badge(p.get("mtype") or "—","info") if p.get("mtype") and p.get("mtype")!="—" else "—"}</td>'
+                     f'<td>{type_badge(p.get("mtype"))}</td>'
                      f'<td><a class="k-link" href="{market_url(p.get("ticker"))}" target="_blank">{mkt} ↗</a></td>'
                      f'<td>{(p.get("yes_label") or "—")[:24]}</td><td>{(p.get("direction") or "").upper()}</td>'
                      f'<td class="dim">{fdate(p.get("resolved_at") if p.get("resolved") else p.get("close_time"))}</td>'
