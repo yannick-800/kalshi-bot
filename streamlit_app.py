@@ -89,6 +89,21 @@ a.k-link{ color:var(--indigo); text-decoration:none; } a.k-link:hover{ color:var
 /* buttons */
 .stButton>button{ border:1px solid var(--border); background:var(--surface2); color:#fff; border-radius:8px; font-weight:500; }
 .stButton>button:hover{ border-color:var(--borderHi); background:rgba(255,255,255,.06); }
+/* selected state (active preset): white on black, unmistakable */
+.stButton>button[kind="primary"]{ background:#FFFFFF; color:#0A0A0F; border-color:#FFFFFF; font-weight:700; }
+.stButton>button[kind="primary"]:hover,
+.stButton>button[kind="primary"]:focus{ background:#E8E8E8; color:#0A0A0F; border-color:#E8E8E8; }
+/* inputs — the wrapper carries the fill, the field itself stays transparent.
+   Both the testid and the older baseweb names are listed so the styling holds
+   whichever Streamlit build serves the page. */
+[data-testid="stNumberInputContainer"], [data-testid="stTextInputRootElement"],
+[data-testid="stTextAreaRootElement"],
+[data-baseweb="input"], [data-baseweb="base-input"], [data-baseweb="textarea"],
+[data-baseweb="select"]>div{ background:#79797975 !important; }
+[data-testid="stNumberInputField"], [data-testid="stTextInput"] input,
+[data-testid="stNumberInput"] input, [data-testid="stTextArea"] textarea,
+[data-testid="stNumberInputStepUp"], [data-testid="stNumberInputStepDown"]{
+  background:transparent !important; color:#fff !important; }
 hr{ border-color:var(--border); }
 </style>
 """
@@ -493,7 +508,9 @@ elif PAGE == "Ajustes":
     st.caption("Aplican un paquete de parámetros de una vez. El preset activo se muestra abajo.")
     pc = st.columns(3)
     for i, (name, bundle) in enumerate(PRESETS.items()):
-        if pc[i].button(("✓ " if cfg.get("strategy_preset") == name else "") + name, use_container_width=True):
+        _on = cfg.get("strategy_preset") == name
+        if pc[i].button(("✓ " if _on else "") + name, use_container_width=True,
+                        type="primary" if _on else "secondary"):
             cfg.update(bundle); cfg["strategy_preset"] = name; st.rerun()
     st.caption(f"Preset activo: **{cfg.get('strategy_preset', '—')}** · cambiar un valor manual no altera el nombre.")
 
