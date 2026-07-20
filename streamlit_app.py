@@ -84,7 +84,11 @@ a.k-link{ color:var(--indigo); text-decoration:none; } a.k-link:hover{ color:var
 [data-testid="stSidebar"] [role="radiogroup"]{ gap:4px; }
 [data-testid="stSidebar"] [role="radiogroup"] label{ padding:8px 12px; border-radius:8px; border:1px solid transparent; width:100%; }
 [data-testid="stSidebar"] [role="radiogroup"] label:hover{ background:rgba(255,255,255,.05); }
-[data-testid="stSidebar"] [role="radiogroup"] label:has(input:checked){ background:var(--surface); border:1px solid var(--border); }
+[data-testid="stSidebar"] [role="radiogroup"] label:has(input:checked){ background:#FFFFFF; border-color:#FFFFFF; }
+/* every descendant, so the nested markdown span/p can't keep its white text */
+[data-testid="stSidebar"] [role="radiogroup"] label:has(input:checked) *{
+  color:#0A0A0F !important; -webkit-text-fill-color:#0A0A0F !important; font-weight:700; }
+[data-testid="stSidebar"] [role="radiogroup"] label:has(input:checked):hover{ background:#E8E8E8; }
 [data-testid="stSidebar"] [role="radiogroup"] input{ display:none; }
 /* buttons */
 .stButton>button{ border:1px solid var(--border); background:var(--surface2); color:#fff; border-radius:8px; font-weight:500; }
