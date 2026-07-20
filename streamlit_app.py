@@ -46,7 +46,7 @@ CSS = """
 [data-testid="stHeader"]{ background:transparent; }
 #MainMenu, footer, [data-testid="stToolbar"]{ visibility:hidden; }
 html, body, [class*="css"]{ font-family:'Chakra Petch',Inter,system-ui,sans-serif; letter-spacing:.01em; color:#fff; }
-.block-container{ padding-top:1.4rem; max-width:1400px; }
+.block-container{ padding-top:1.4rem; max-width:none; }
 [data-testid="stSidebar"]{ background:var(--void); border-right:1px solid var(--border); }
 [data-testid="stSidebar"] .block-container{ padding-top:1rem; }
 /* brand */
@@ -402,7 +402,10 @@ elif PAGE == "Posiciones":
         if p.get("resolved"):
             return badge("ganada ✓", "win") if p.get("outcome_correct") == 1 else badge("perdida ✗", "loss")
         m = {"filled": "info", "partial": "warn", "submitted": "warn", "error": "loss", "canceled": "loss"}
-        return badge(p.get("status") or "—", m.get(p.get("status"), "neutral"))
+        es = {"filled": "en curso", "partial": "parcial", "submitted": "enviada",
+              "error": "error", "canceled": "cancelada"}
+        s = p.get("status")
+        return badge(es.get(s, s or "—"), m.get(s, "neutral"))
 
     if positions:
         rows = ""
