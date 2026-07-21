@@ -29,6 +29,7 @@ import logging
 import os
 import sqlite3
 import tempfile
+from datetime import datetime, timezone
 from pathlib import Path
 
 import db
@@ -37,9 +38,12 @@ logger = logging.getLogger(__name__)
 
 SCOPES = ["https://www.googleapis.com/auth/drive.file"]
 REMOTE_NAME = "kalshi-bot.db"
+DAILY_PREFIX = "kalshi-bot-"   # kalshi-bot-2026-07-20.db
+KEEP_DAILY = 7
 
 _TOKEN_URI = "https://oauth2.googleapis.com/token"
 _file_id: str | None = None   # cached across pushes so we update, not duplicate
+_last_daily: str = ""         # yyyy-mm-dd of the last dated copy written
 
 
 def _setting(name: str) -> str:
@@ -148,19 +152,55 @@ def push() -> bool:
                 conn.execute(f"VACUUM INTO '{snap}'")
 
             svc = _service()
+            folder = _setting("GDRIVE_FOLDER_ID")
             media = MediaFileUpload(str(snap), mimetype="application/x-sqlite3",
                                     resumable=False)
             fid = _find(svc)
             if fid:
                 svc.files().update(fileId=fid, media_body=media).execute()
             else:
-                meta = {"name": REMOTE_NAME,
-                        "parents": [_setting("GDRIVE_FOLDER_ID")]}
+                meta = {"name": REMOTE_NAME, "parents": [folder]}
                 created = svc.files().create(body=meta, media_body=media,
                                              fields="id").execute()
                 globals()["_file_id"] = created["id"]
             logger.info(f"Drive: respaldo subido ({snap.stat().st_size // 1024} KB)")
+
+            # A dated copy once a day. The main file is overwritten constantly,
+            # so if something wipes the data (a stray reset, a bad run) these
+            # are the only way back — the app is open to anyone with the URL.
+            today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+            if _last_daily != today:
+                name = f"{DAILY_PREFIX}{today}.db"
+                q = (f"name = '{name}' and '{folder}' in parents and trashed = false")
+                found = svc.files().list(q=q, fields="files(id)", spaces="drive",
+                                         pageSize=1).execute().get("files", [])
+                dated = MediaFileUpload(str(snap), mimetype="application/x-sqlite3",
+                                        resumable=False)
+                if found:
+                    svc.files().update(fileId=found[0]["id"], media_body=dated).execute()
+                else:
+                    svc.files().create(body={"name": name, "parents": [folder]},
+                                       media_body=dated, fields="id").execute()
+                globals()["_last_daily"] = today
+                logger.info(f"Drive: copia diaria {name}")
+                _prune_daily(svc, folder)
         return True
     except Exception as e:  # noqa: BLE001
         logger.warning(f"Drive: no se pudo respaldar ({e})")
         return False
+
+
+def _prune_daily(svc, folder: str) -> None:
+    """Keep only the newest KEEP_DAILY dated copies."""
+    try:
+        q = (f"name contains '{DAILY_PREFIX}' and '{folder}' in parents "
+             f"and trashed = false")
+        files = svc.files().list(q=q, fields="files(id,name)", spaces="drive",
+                                 pageSize=100).execute().get("files", [])
+        # Names are ISO-dated, so a plain sort is chronological.
+        old = sorted(files, key=lambda f: f["name"])[:-KEEP_DAILY]
+        for f in old:
+            svc.files().delete(fileId=f["id"]).execute()
+            logger.info(f"Drive: copia vieja borrada {f['name']}")
+    except Exception as e:  # noqa: BLE001
+        logger.debug(f"Drive: no se pudieron limpiar copias viejas ({e})")
