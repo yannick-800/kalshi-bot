@@ -128,6 +128,7 @@ CREATE TABLE IF NOT EXISTS bot_positions (
     yes_label TEXT DEFAULT '',
     mtype TEXT DEFAULT '',
     event_title TEXT DEFAULT '',
+    reason TEXT DEFAULT '',          -- why the bot took this bet, in plain Spanish
     kalshi_env TEXT DEFAULT 'demo',
     error TEXT,
     created_at TEXT,
@@ -201,7 +202,7 @@ def init_db() -> None:
         conn.executescript(SCHEMA)
         # Migrations for existing DBs (ALTER is a no-op-safe add).
         cols = {r[1] for r in conn.execute("PRAGMA table_info(bot_positions)")}
-        for col in ("close_time", "yes_label", "mtype", "event_title"):
+        for col in ("close_time", "yes_label", "mtype", "event_title", "reason"):
             if col not in cols:
                 conn.execute(f"ALTER TABLE bot_positions ADD COLUMN {col} TEXT DEFAULT ''")
     logger.info(f"database ready at {db_path()}")
@@ -452,6 +453,7 @@ _POS_FIELDS = [
     "filled_contracts", "cost_usd", "client_order_id", "kalshi_order_id",
     "status", "confidence", "edge_pts", "signal_price", "balance_before_usd",
     "close_time", "yes_label", "mtype", "event_title", "kalshi_env", "error",
+    "reason",
 ]
 
 

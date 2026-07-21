@@ -219,7 +219,19 @@ async def _run(state):
                 last["snap"] = now
             state["cycles"] += 1
         except Exception as e:  # noqa: BLE001
-            logging.getLogger("service").debug(f"loop: {e}")
+            # This used to log at DEBUG, below the root level — so a loop that
+            # threw every cycle looked perfectly healthy in Registros while the
+            # bot silently did nothing. Surface it, but collapse repeats so one
+            # broken call can't push 3600 lines an hour.
+            msg = f"{type(e).__name__}: {e}"
+            log = logging.getLogger("service")
+            if msg != state.get("last_err"):
+                state["last_err"] = msg
+                state["last_err_at"] = now
+                log.error(f"error en el ciclo — {msg}", exc_info=True)
+            elif now - state.get("last_err_at", 0) >= 300:
+                state["last_err_at"] = now
+                log.error(f"sigue fallando — {msg}")
         await asyncio.sleep(1)
 
 
@@ -506,6 +518,14 @@ elif PAGE == "Posiciones":
                      f'<td class="mono">{p.get("filled_contracts",0)}/{p.get("target_contracts",0)}</td>'
                      f'<td class="mono">{p.get("limit_price_cents",0)}¢</td>'
                      f'<td class="mono dim">{usd(p.get("cost_usd") or 0)}</td><td>{pnl_html}</td><td>{estado(p)}</td></tr>')
+            # Why the bot took it, as a full-width line under the row — a 12th
+            # column would squeeze an already wide table.
+            why = (p.get("reason") or "").strip()
+            if why:
+                rows += (f'<tr style="{tint}"><td colspan="11" '
+                         f'style="padding:2px 10px 10px 10px;border-top:none">'
+                         f'<span class="dim" style="font-size:11.5px;line-height:1.5">'
+                         f'💡 {why}</span></td></tr>')
         st.markdown(f'<div class="k-card" style="padding:0;overflow-x:auto"><table class="k-tbl"><thead><tr>'
                     f'<th>Abierta</th><th>Tipo</th><th>Mercado</th><th>Puesta</th><th>Lado</th><th>Cierre</th>'
                     f'<th>Ejec.</th><th>Precio</th><th>Costo</th><th>P&L</th><th>Estado</th></tr></thead>'
@@ -602,7 +622,12 @@ elif PAGE == "Ajustes":
     cfg["take_profit_on_day"] = r[1].number_input("Take-profit diario $ (0 = off)", value=float(cfg.get("take_profit_on_day", 0)), step=5.0)
     # Every widget above wrote straight into cfg, so one save at the end of the
     # page captures whatever changed — including a preset applied this run.
-    db.save_config(cfg)
+    # Only on an actual change: the page reruns every 6s from the autorefresh,
+    # and writing the config each time would fight the engine for the DB.
+    _snap = repr(sorted(cfg.items(), key=lambda kv: kv[0]))
+    if _snap != st.session_state.get("_cfg_snap"):
+        st.session_state["_cfg_snap"] = _snap
+        db.save_config(cfg)
     st.caption("Todos los cambios se aplican **en vivo** al motor y quedan guardados: "
                "un reinicio vuelve con esta misma configuración.")
 

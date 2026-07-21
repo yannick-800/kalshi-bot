@@ -114,6 +114,50 @@ def entry_band(signal: dict, cfg: dict) -> tuple[int, int]:
     return int(cfg["min_entry_price_cents"]), int(cfg["max_entry_price_cents"])
 
 
+def explain_trade(signal: dict, source: str, direction: str, limit_cents: int,
+                  edge_pts: float, contracts: int, cfg: dict) -> str:
+    """One plain-Spanish sentence saying why this bet was taken.
+
+    Written at execution time and stored with the position, so months later you
+    can still tell what the bot was thinking — the log line alone doesn't say
+    which gate let it through.
+    """
+    stype = (signal.get("signal_type") or "").strip()
+    conf = float(signal.get("confidence") or 0.0)
+    pick = (signal.get("yes_label") or "").strip()
+    lado = "SÍ" if direction == "yes" else "NO"
+
+    if stype == "tennis_favorite":
+        que = f"a {pick}" if pick else "al favorito"
+        return (f"Tenis · el mercado da {conf:.0f}% {que} en el set decisivo de un "
+                f"partido ATP (solo hombres). Es tu estrategia de favorito ≥90%: "
+                f"cobra poco pero acierta seguido. Entrada {limit_cents}¢.")
+
+    if stype == "tennis_live":
+        return (f"Tenis · el marcador de ESPN da {conf:.0f}% y Kalshi paga "
+                f"{limit_cents}¢ ({edge_pts:+.0f} pts de ventaja). El mercado va "
+                f"rezagado respecto del partido real.")
+
+    if stype == "crypto_spot":
+        return (f"Cripto · el precio spot de Coinbase proyecta este resultado al "
+                f"{conf:.0f}% y Kalshi paga {limit_cents}¢ ({edge_pts:+.0f} pts). "
+                f"El mercado todavía no reflejó el movimiento del spot.")
+
+    if source == "whale":
+        usd = float(signal.get("dollar_value") or 0.0)
+        return (f"Ballena · alguien movió ${usd:,.0f} en este mercado. El bot lo "
+                f"sigue con {edge_pts:+.0f} pts de ventaja y confianza {conf:.0f}. "
+                f"Entrada {limit_cents}¢, lado {lado}.")
+
+    if cfg.get("contrarian_only"):
+        return (f"Momentum contrarian · hubo un clúster de volumen y el bot apuesta "
+                f"EN CONTRA de la multitud, con {edge_pts:+.0f} pts de ventaja y "
+                f"confianza {conf:.0f}. Entrada {limit_cents}¢, lado {lado}.")
+
+    return (f"Momentum · clúster de volumen/precio con {edge_pts:+.0f} pts de "
+            f"ventaja y confianza {conf:.0f}. Entrada {limit_cents}¢, lado {lado}.")
+
+
 def _signal_cost_cents(signal: dict, source: str) -> tuple[str, int]:
     if source == "whale":
         direction = (signal.get("taker_side") or "yes").lower()
@@ -205,6 +249,14 @@ def should_trade(signal: dict, source: str, cfg: dict) -> tuple[bool, str]:
         return False, f"entry {cost}c < {lo}c"
     if cost > hi:
         return False, f"entry {cost}c > {hi}c"
+
+    # Thin markets fill badly and resolve unpredictably. `volume` is only set
+    # when we have the market synced locally; unknown means don't judge.
+    min_vol = float(cfg.get("min_market_volume", 0) or 0)
+    if min_vol > 0:
+        vol = signal.get("volume")
+        if vol is not None and float(vol) < min_vol:
+            return False, f"volumen {float(vol):.0f} < {min_vol:.0f}"
 
     max_days = int(cfg.get("max_resolution_days", 0) or 0)
     if max_days > 0:
@@ -363,6 +415,8 @@ async def execute_signal(signal: dict, source: str, cfg: dict, balance_usd: floa
         "edge_pts": edge_pts, "signal_price": (signal.get("price") or 0.0) * 100,
         "balance_before_usd": balance_usd, "close_time": _m["close"], "yes_label": _m["yes_label"],
         "mtype": _m["mtype"], "event_title": _m["event_title"], "kalshi_env": env,
+        "reason": explain_trade({**signal, "yes_label": _m["yes_label"]}, source,
+                                direction, limit_cents, edge_pts, contracts, cfg),
     }
 
     # FINAL SAFETY GATE — never place an order with trading disabled.
@@ -494,6 +548,21 @@ def _close_time_map(conn, *row_lists) -> dict[str, str]:
     return out
 
 
+def _volume_map(conn, *row_lists) -> dict[str, float]:
+    """Traded volume per candidate market, for the min_market_volume gate.
+
+    Whales fire on markets we may not have synced, so a missing ticker means
+    'unknown' — the gate treats that as pass rather than silently dropping
+    every unsynced market.
+    """
+    tickers = {r["ticker"] for rows in row_lists for r in rows if r["ticker"]}
+    if not tickers:
+        return {}
+    qs = ",".join("?" for _ in tickers)
+    return {row["ticker"]: float(row["volume"] or 0.0) for row in conn.execute(
+        f"SELECT ticker, volume FROM markets WHERE ticker IN ({qs})", tuple(tickers))}
+
+
 # We only sync a slice of Kalshi's ~24k markets, but whales fire on ANY market —
 # so most whale tickers have no close_time locally. This cache fills the gaps
 # from the public market endpoint (close_time is static, so cache forever).
@@ -589,6 +658,8 @@ async def paper_execute_signal(signal: dict, source: str, cfg: dict, cash_usd: f
         "balance_before_usd": cash_usd, "close_time": meta["close"],
         "yes_label": meta["yes_label"], "mtype": meta["mtype"],
         "event_title": meta["event_title"], "kalshi_env": PAPER_ENV,
+        "reason": explain_trade({**signal, "yes_label": meta["yes_label"]}, source,
+                                direction, limit_cents, edge_pts, contracts, cfg),
     }
     logger.info(f"[paper/{source}] {signal['ticker']} {direction} x{contracts} @ {limit_cents}c "
                 f"= ${cost:.2f} conf={signal.get('confidence', 0):.1f} edge={edge_pts:.1f}")
@@ -619,6 +690,7 @@ async def paper_scan_for_trades(cfg: dict) -> list[dict]:
         whales = conn.execute("SELECT * FROM whale_trades WHERE resolved=0 ORDER BY created_at DESC LIMIT 50").fetchall()
         alerts = conn.execute("SELECT * FROM alerts WHERE resolved=0 ORDER BY created_at DESC LIMIT 50").fetchall()
         close_map = _close_time_map(conn, whales, alerts)
+        vol_map = _volume_map(conn, whales, alerts)
     if float(cfg.get("max_resolution_hours", 0) or 0) > 0:
         await _fill_close_times(close_map, {r["ticker"] for r in list(whales) + list(alerts) if r["ticker"]})
     for src, rows, seen in (("whale", whales, seen_w), ("momentum", alerts, seen_m)):
@@ -627,6 +699,7 @@ async def paper_scan_for_trades(cfg: dict) -> list[dict]:
             if int(sig["id"]) in seen:
                 continue
             sig["close_time"] = close_map.get(sig["ticker"], "")
+            sig["volume"] = vol_map.get(sig["ticker"])
             # Same-event guard: derive the event so the per-event cap sees that
             # e.g. Rublev-market and Tabilo-market are the SAME match.
             sig["event_ticker"] = sig.get("event_ticker") or derive_event(sig["ticker"])
@@ -670,6 +743,7 @@ async def scan_for_trades(cfg: dict) -> list[dict]:
             "SELECT * FROM alerts WHERE resolved=0 ORDER BY created_at DESC LIMIT 50"
         ).fetchall()
         close_map = _close_time_map(conn, whales, alerts)
+        vol_map = _volume_map(conn, whales, alerts)
 
     for src, rows, seen in (("whale", whales, seen_w), ("momentum", alerts, seen_m)):
         for r in rows:
@@ -677,6 +751,7 @@ async def scan_for_trades(cfg: dict) -> list[dict]:
             if int(sig["id"]) in seen:
                 continue
             sig["close_time"] = close_map.get(sig["ticker"], "")
+            sig["volume"] = vol_map.get(sig["ticker"])
             sig["event_ticker"] = sig.get("event_ticker") or derive_event(sig["ticker"])
             ok, reason = should_trade(sig, src, cfg)
             if not ok:
