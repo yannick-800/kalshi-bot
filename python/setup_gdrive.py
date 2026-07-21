@@ -4,13 +4,15 @@ Run this on YOUR machine. It opens a browser, you approve access, and it
 prints the block to paste into Streamlit Cloud → Manage app → Settings →
 Secrets. Nothing is written to the repo and no token is sent anywhere else.
 
-    python python/setup_gdrive.py /path/to/oauth_client.json <FOLDER_ID>
+    python python/setup_gdrive.py <FOLDER_ID>                # usa el cliente de Invoice Maker
+    python python/setup_gdrive.py <FOLDER_ID> otro_client.json
 
-Get the client JSON at console.cloud.google.com → APIs & Services →
-Credentials → Create credentials → OAuth client ID → **Desktop app**.
-Use a client dedicated to this bot: the `drive.file` scope limits access to
-files created by that client, so a dedicated one can only ever reach this
-database — never the files your other apps created.
+It reuses the Invoice Maker Nube OAuth client file, so there is nothing new to
+create in Google Cloud. It does NOT reuse that app's token: that one carries
+full-Drive and Gmail scopes, and a token on a third-party host should never
+carry more than the job needs. This mints a fresh token limited to
+`drive.file` — access to files this client created, nothing else in the Drive
+and no Gmail at all.
 """
 from __future__ import annotations
 
@@ -19,15 +21,21 @@ from pathlib import Path
 
 SCOPES = ["https://www.googleapis.com/auth/drive.file"]
 
+DEFAULT_CLIENT = Path.home() / "Claude" / "Invoice Maker Nube" / "json" / "google_credentials.json"
+
 
 def main() -> int:
-    if len(sys.argv) != 3:
+    if len(sys.argv) not in (2, 3):
         print(__doc__)
         return 2
-    client_file, folder_id = Path(sys.argv[1]).expanduser(), sys.argv[2].strip()
+    folder_id = sys.argv[1].strip()
+    client_file = (Path(sys.argv[2]).expanduser() if len(sys.argv) == 3
+                   else DEFAULT_CLIENT)
     if not client_file.is_file():
-        print(f"No encuentro el archivo: {client_file}")
+        print(f"No encuentro el archivo de cliente: {client_file}")
         return 1
+    print(f"Cliente OAuth: {client_file}")
+    print(f"Permiso pedido: drive.file (solo archivos de esta app)\n")
 
     try:
         from google_auth_oauthlib.flow import InstalledAppFlow

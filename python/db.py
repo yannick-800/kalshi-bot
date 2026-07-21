@@ -183,7 +183,17 @@ CREATE TABLE IF NOT EXISTS risk_breaches (
     started_at REAL,
     PRIMARY KEY (env, kind)
 );
+
+-- Strategy settings, so a restart resumes with the tuning you chose instead
+-- of the defaults. Living in the DB means the Drive backup carries it too.
+CREATE TABLE IF NOT EXISTS app_settings (
+    key        TEXT PRIMARY KEY,
+    value      TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
 """
+
+CONFIG_KEY = "trader_config"
 
 
 def init_db() -> None:
@@ -195,6 +205,30 @@ def init_db() -> None:
             if col not in cols:
                 conn.execute(f"ALTER TABLE bot_positions ADD COLUMN {col} TEXT DEFAULT ''")
     logger.info(f"database ready at {db_path()}")
+
+
+def save_config(cfg: dict) -> None:
+    """Persist the strategy settings. Credentials never go in here."""
+    import json
+    with get_db() as conn:
+        conn.execute(
+            "INSERT INTO app_settings (key, value, updated_at) VALUES (?,?,?) "
+            "ON CONFLICT(key) DO UPDATE SET value=excluded.value, "
+            "updated_at=excluded.updated_at",
+            (CONFIG_KEY, json.dumps(cfg), _now()))
+
+
+def load_config() -> dict:
+    """The saved settings, or {} the first time / if the row is unreadable."""
+    import json
+    try:
+        with get_db() as conn:
+            row = conn.execute("SELECT value FROM app_settings WHERE key=?",
+                               (CONFIG_KEY,)).fetchone()
+        return json.loads(row["value"]) if row else {}
+    except Exception as e:  # noqa: BLE001 — never block startup over settings
+        logger.warning(f"could not load saved config: {e}")
+        return {}
 
 
 def _now() -> str:

@@ -8,7 +8,6 @@ coloured tables. Paper-trading only — no keys, safe to host publicly.
 from __future__ import annotations
 
 import asyncio
-import hmac
 import logging
 import os
 import sys
@@ -116,47 +115,6 @@ hr{ border-color:var(--border); }
 st.markdown(CSS, unsafe_allow_html=True)
 
 
-# ── Access gate ─────────────────────────────────────────────────────
-# Streamlit Cloud's free tier only allows one private app per workspace, so
-# this one is public by URL. The password keeps strangers out of the controls
-# (reset, settings, credentials). Set APP_PASSWORD in the app's Secrets; with
-# no secret set we refuse to render rather than silently serving it open.
-def _gate() -> None:
-    if st.session_state.get("_ok"):
-        return
-    expected = None
-    try:
-        expected = st.secrets.get("APP_PASSWORD")
-    except Exception:  # noqa: BLE001  — no secrets.toml at all
-        pass
-
-    st.markdown('<div class="k-brand" style="font-size:26px">KALSHI BOT</div>', unsafe_allow_html=True)
-    if not expected:
-        st.error("Falta configurar la contraseña.")
-        st.markdown(
-            'En Streamlit Cloud: **Manage app → Settings → Secrets**, y pegá una línea:\n\n'
-            '```toml\nAPP_PASSWORD = "la-que-elijas"\n```\n\n'
-            'Guardá y la app se reinicia sola. Hasta entonces no se muestra nada.')
-        st.stop()
-
-    # A form, so the typed password and the submit commit in the SAME rerun.
-    # With a bare button, Streamlit can process the click before the text
-    # widget has sent its value, and the first attempt always looks wrong.
-    with st.form("_login", clear_on_submit=True):
-        pw = st.text_input("Contraseña", type="password")
-        if st.form_submit_button("Entrar", type="primary"):
-            if hmac.compare_digest(str(pw), str(expected)):
-                st.session_state["_ok"] = True
-                st.rerun()
-            else:
-                st.error("Contraseña incorrecta.")
-    st.caption("Panel privado · paper trading. Si no es tuyo, no deberías estar acá.")
-    st.stop()
-
-
-_gate()
-
-
 # ── Trading engine (runs ONCE in a background thread) ───────────────
 @st.cache_resource
 def get_engine() -> dict:
@@ -179,12 +137,19 @@ def get_engine() -> dict:
     # redeploy resumes where it left off instead of starting at $1,000.
     gdrive_sync.restore()
     db.init_db()  # once, synchronously, before the thread or any read touches the DB
+    # First boot uses these; after that whatever you last set in Ajustes wins.
+    base = {
+        "paper_trading": True, "tennis_favorite_enabled": True,
+        "tennis_signal_enabled": False, "crypto_signal_enabled": False,
+        "trade_whales": False, "trade_momentum": True, "main_record_signals": True,
+    }
+    saved = db.load_config()
+    if saved:
+        base.update(saved)
+        logging.getLogger("service").info(
+            f"ajustes restaurados (preset: {saved.get('strategy_preset', '—')})")
     state = {
-        "cfg": merge_with_defaults({
-            "paper_trading": True, "tennis_favorite_enabled": True,
-            "tennis_signal_enabled": False, "crypto_signal_enabled": False,
-            "trade_whales": False, "trade_momentum": True, "main_record_signals": True,
-        }),
+        "cfg": merge_with_defaults(base),
         "running": True, "cycles": 0, "started_at": time.time(), "logs": logs,
         "last_whale": None, "last_tennis": None,
     }
@@ -620,7 +585,11 @@ elif PAGE == "Ajustes":
     cfg["max_positions_per_event"] = r[1].number_input("Máx. por evento", value=int(cfg.get("max_positions_per_event", 1)), step=1)
     cfg["stop_loss_on_day"] = r[0].number_input("Stop-loss diario $ (negativo lo arma)", value=float(cfg.get("stop_loss_on_day", -30)), step=5.0)
     cfg["take_profit_on_day"] = r[1].number_input("Take-profit diario $ (0 = off)", value=float(cfg.get("take_profit_on_day", 0)), step=5.0)
-    st.caption("Todos los cambios se aplican **en vivo** al motor. Modo paper — dinero virtual.")
+    # Every widget above wrote straight into cfg, so one save at the end of the
+    # page captures whatever changed — including a preset applied this run.
+    db.save_config(cfg)
+    st.caption("Todos los cambios se aplican **en vivo** al motor y quedan guardados: "
+               "un reinicio vuelve con esta misma configuración.")
 
     st.markdown("<hr>", unsafe_allow_html=True)
     st.markdown('<div class="k-label">Respaldo en Google Drive</div>', unsafe_allow_html=True)
