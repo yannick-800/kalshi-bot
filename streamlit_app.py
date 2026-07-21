@@ -28,7 +28,6 @@ import api  # noqa: E402
 import auth  # noqa: E402
 import crypto_signal  # noqa: E402
 import db  # noqa: E402
-import gdrive_sync  # noqa: E402
 import scanner  # noqa: E402
 import tennis_signal  # noqa: E402
 import trader  # noqa: E402
@@ -133,9 +132,6 @@ def get_engine() -> dict:
         root.addHandler(h)
     logging.getLogger("httpx").setLevel(logging.WARNING)
 
-    # Pull yesterday's database back down BEFORE anything opens it, so a
-    # redeploy resumes where it left off instead of starting at $1,000.
-    gdrive_sync.restore()
     db.init_db()  # once, synchronously, before the thread or any read touches the DB
     # First boot uses these; after that whatever you last set in Ajustes wins.
     base = {
@@ -168,8 +164,7 @@ async def _run(state):
     except Exception as e:  # noqa: BLE001
         logging.getLogger("service").warning(f"sync inicial: {e}")
     last = {k: 0.0 for k in ("market", "whale", "momentum", "crypto", "tennis", "paper",
-                             "resolve", "snap", "backup")}
-    last["backup"] = time.time()  # the restore just ran; don't re-upload immediately
+                             "resolve", "snap")}
     while state["running"]:
         now = time.time(); cfg = state["cfg"]
         try:
@@ -189,18 +184,6 @@ async def _run(state):
                     state["last_tennis"] = datetime.now(timezone.utc).isoformat()
             if now - last["paper"] >= 20:
                 await trader.paper_scan_for_trades(cfg); last["paper"] = now
-                # A new bet is the one thing we cannot afford to lose to a
-                # deploy, so back up the moment the count changes instead of
-                # waiting for the 5-minute tick.
-                with db.get_db() as conn:
-                    n_pos = conn.execute(
-                        "SELECT COUNT(*) FROM bot_positions WHERE kalshi_env='paper'"
-                    ).fetchone()[0]
-                if n_pos != state.get("n_positions"):
-                    if state.get("n_positions") is not None:
-                        await asyncio.to_thread(gdrive_sync.push)
-                        last["backup"] = now
-                    state["n_positions"] = n_pos
             if now - last["resolve"] >= 120:
                 await trader.mark_resolved_positions(cfg); last["resolve"] = now
             if now - last["snap"] >= 60:
@@ -211,10 +194,6 @@ async def _run(state):
                                            realized_pnl_usd=stx["realized_pnl"], wins=stx["wins"],
                                            losses=stx["losses"], open_positions=stx["open_filled"], env="paper")
                 last["snap"] = now
-            # Back the DB up to Drive so a deploy or restart doesn't lose it.
-            # Blocking network call — off the event loop thread.
-            if now - last["backup"] >= 300:
-                await asyncio.to_thread(gdrive_sync.push); last["backup"] = now
             state["cycles"] += 1
         except Exception as e:  # noqa: BLE001
             logging.getLogger("service").debug(f"loop: {e}")
@@ -602,22 +581,6 @@ elif PAGE == "Ajustes":
     db.save_config(cfg)
     st.caption("Todos los cambios se aplican **en vivo** al motor y quedan guardados: "
                "un reinicio vuelve con esta misma configuración.")
-
-    st.markdown("<hr>", unsafe_allow_html=True)
-    st.markdown('<div class="k-label">Respaldo en Google Drive</div>', unsafe_allow_html=True)
-    if gdrive_sync.configured():
-        st.markdown(badge("activo", "win"), unsafe_allow_html=True)
-        st.caption("Se respalda **al instante cuando se abre una apuesta**, además cada 5 min, "
-                   "y se restaura sola al reiniciar — un deploy ya no borra posiciones. "
-                   "Guarda también una copia por día (últimas 7) por si hay que volver atrás.")
-        if st.button("💾 Respaldar ahora"):
-            st.success("Respaldo subido a Drive.") if gdrive_sync.push() else \
-                st.error("No se pudo respaldar — mirá Registros.")
-    else:
-        st.markdown(badge("sin configurar", "warn"), unsafe_allow_html=True)
-        st.caption("Sin esto la base vive en disco efímero: **cada deploy o reinicio la borra**. "
-                   "Corré `python python/setup_gdrive.py <client.json> <FOLDER_ID>` y pegá el "
-                   "resultado en Secrets.")
 
 # ══════════════════════════ CLAVES ════════════════════════════════
 elif PAGE == "Claves":
