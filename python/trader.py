@@ -95,6 +95,25 @@ async def _compute_limit_price_cents(ticker: str, direction: str,
     return max(1, min(99, fallback))
 
 
+PREDICTIVE_TYPES = ("crypto_spot", "tennis_live", "tennis_favorite")
+
+
+def entry_band(signal: dict, cfg: dict) -> tuple[int, int]:
+    """Allowed entry price range in cents.
+
+    The tight band exists to stop whale-follow from chasing favourites.
+    Predictive engines have a real model edge, so they get a wide band — a
+    favourite at 94c IS the tennis strategy, not a mistake.
+
+    Single source of truth on purpose: this used to be inlined in should_trade
+    while the execute path re-applied the tight band unconditionally, so every
+    tennis-favourite signal passed the gate and was then dropped silently.
+    """
+    if (signal.get("signal_type") or "") in PREDICTIVE_TYPES:
+        return 5, 95
+    return int(cfg["min_entry_price_cents"]), int(cfg["max_entry_price_cents"])
+
+
 def _signal_cost_cents(signal: dict, source: str) -> tuple[str, int]:
     if source == "whale":
         direction = (signal.get("taker_side") or "yes").lower()
@@ -180,12 +199,7 @@ def should_trade(signal: dict, source: str, cfg: dict) -> tuple[bool, str]:
         if cat not in {c.lower() for c in allowed_cats}:
             return False, f"category {cat!r} not allowed"
 
-    # The tight entry-price band exists to stop whale-follow from chasing
-    # favourites. Predictive engines have a real model edge, so they use a wide
-    # band (a genuine edge at 85c is a valid trade).
-    predictive = (signal.get("signal_type") or "") in ("crypto_spot", "tennis_live", "tennis_favorite")
-    lo = 5 if predictive else cfg["min_entry_price_cents"]
-    hi = 95 if predictive else cfg["max_entry_price_cents"]
+    lo, hi = entry_band(signal, cfg)
     _, cost = _signal_cost_cents(signal, source)
     if cost < lo:
         return False, f"entry {cost}c < {lo}c"
@@ -326,7 +340,9 @@ async def execute_signal(signal: dict, source: str, cfg: dict, balance_usd: floa
         return None
 
     limit_cents = await _compute_limit_price_cents(signal["ticker"], direction, signal_cost_cents, cfg)
-    if not (cfg["min_entry_price_cents"] <= limit_cents <= cfg["max_entry_price_cents"]):
+    lo, hi = entry_band(signal, cfg)
+    if not (lo <= limit_cents <= hi):
+        logger.info(f"[gate] precio {limit_cents}c fuera de banda {lo}-{hi}c — salteo {signal['ticker']}")
         return None
     max_slip = int(cfg.get("max_entry_slippage_cents", 0) or 0)
     if max_slip > 0 and limit_cents > signal_cost_cents + max_slip:
@@ -543,7 +559,9 @@ async def paper_execute_signal(signal: dict, source: str, cfg: dict, cash_usd: f
         return None
 
     limit_cents = await _compute_limit_price_cents(signal["ticker"], direction, signal_cost_cents, cfg)
-    if not (cfg["min_entry_price_cents"] <= limit_cents <= cfg["max_entry_price_cents"]):
+    lo, hi = entry_band(signal, cfg)
+    if not (lo <= limit_cents <= hi):
+        logger.info(f"[gate] precio {limit_cents}c fuera de banda {lo}-{hi}c — salteo {signal['ticker']}")
         return None
 
     contracts = max(1, int(target * 100 // limit_cents))

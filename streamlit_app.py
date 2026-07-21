@@ -114,6 +114,29 @@ hr{ border-color:var(--border); }
 st.markdown(CSS, unsafe_allow_html=True)
 
 
+# ── Version ─────────────────────────────────────────────────────────
+# Taken from the deployed commit, so the sidebar changes on every deploy and
+# tells you exactly which code is live. Guessing that from a hardcoded string
+# already cost us: a fix looked shipped while the old container kept running.
+@st.cache_resource
+def app_version() -> str:
+    import subprocess
+    here = str(Path(__file__).resolve().parent)
+    try:
+        sha = subprocess.run(["git", "-C", here, "rev-parse", "--short", "HEAD"],
+                             capture_output=True, text=True, timeout=5)
+        when = subprocess.run(["git", "-C", here, "log", "-1", "--format=%cd",
+                               "--date=format:%d %b %H:%M"],
+                              capture_output=True, text=True, timeout=5)
+        if sha.returncode == 0 and sha.stdout.strip():
+            v = sha.stdout.strip()
+            d = when.stdout.strip() if when.returncode == 0 else ""
+            return f"{v} · {d}" if d else v
+    except Exception:  # noqa: BLE001 — git missing or not a checkout
+        pass
+    return "version desconocida"
+
+
 # ── Trading engine (runs ONCE in a background thread) ───────────────
 @st.cache_resource
 def get_engine() -> dict:
@@ -316,7 +339,8 @@ open_ct = stats["open_filled"] + stats["pending"]
 
 # ── sidebar (brand + nav + status, like the desktop) ────────────────
 with st.sidebar:
-    st.markdown('<div class="k-brand">KALSHI BOT</div><div class="k-ver">v1.0.0 · online</div><br>', unsafe_allow_html=True)
+    st.markdown(f'<div class="k-brand">KALSHI BOT</div>'
+                f'<div class="k-ver">{app_version()}</div><br>', unsafe_allow_html=True)
     page = st.radio("nav", ["📊  Panel", "📡  Señales", "💼  Posiciones", "⚙️  Ajustes",
                             "🔑  Claves", "📜  Registros"],
                     label_visibility="collapsed")
