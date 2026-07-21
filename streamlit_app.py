@@ -29,6 +29,7 @@ import api  # noqa: E402
 import auth  # noqa: E402
 import crypto_signal  # noqa: E402
 import db  # noqa: E402
+import gdrive_sync  # noqa: E402
 import scanner  # noqa: E402
 import tennis_signal  # noqa: E402
 import trader  # noqa: E402
@@ -138,14 +139,17 @@ def _gate() -> None:
             'Guardá y la app se reinicia sola. Hasta entonces no se muestra nada.')
         st.stop()
 
-    pw = st.text_input("Contraseña", type="password", key="_pw")
-    if st.button("Entrar", type="primary"):
-        if hmac.compare_digest(str(pw), str(expected)):
-            st.session_state["_ok"] = True
-            del st.session_state["_pw"]
-            st.rerun()
-        else:
-            st.error("Contraseña incorrecta.")
+    # A form, so the typed password and the submit commit in the SAME rerun.
+    # With a bare button, Streamlit can process the click before the text
+    # widget has sent its value, and the first attempt always looks wrong.
+    with st.form("_login", clear_on_submit=True):
+        pw = st.text_input("Contraseña", type="password")
+        if st.form_submit_button("Entrar", type="primary"):
+            if hmac.compare_digest(str(pw), str(expected)):
+                st.session_state["_ok"] = True
+                st.rerun()
+            else:
+                st.error("Contraseña incorrecta.")
     st.caption("Panel privado · paper trading. Si no es tuyo, no deberías estar acá.")
     st.stop()
 
@@ -171,6 +175,9 @@ def get_engine() -> dict:
         root.addHandler(h)
     logging.getLogger("httpx").setLevel(logging.WARNING)
 
+    # Pull yesterday's database back down BEFORE anything opens it, so a
+    # redeploy resumes where it left off instead of starting at $1,000.
+    gdrive_sync.restore()
     db.init_db()  # once, synchronously, before the thread or any read touches the DB
     state = {
         "cfg": merge_with_defaults({
@@ -195,7 +202,9 @@ async def _run(state):
         await scanner.sync_markets(max_pages=10)
     except Exception as e:  # noqa: BLE001
         logging.getLogger("service").warning(f"sync inicial: {e}")
-    last = {k: 0.0 for k in ("market", "whale", "momentum", "crypto", "tennis", "paper", "resolve", "snap")}
+    last = {k: 0.0 for k in ("market", "whale", "momentum", "crypto", "tennis", "paper",
+                             "resolve", "snap", "backup")}
+    last["backup"] = time.time()  # the restore just ran; don't re-upload immediately
     while state["running"]:
         now = time.time(); cfg = state["cfg"]
         try:
@@ -225,6 +234,10 @@ async def _run(state):
                                            realized_pnl_usd=stx["realized_pnl"], wins=stx["wins"],
                                            losses=stx["losses"], open_positions=stx["open_filled"], env="paper")
                 last["snap"] = now
+            # Back the DB up to Drive so a deploy or restart doesn't lose it.
+            # Blocking network call — off the event loop thread.
+            if now - last["backup"] >= 300:
+                await asyncio.to_thread(gdrive_sync.push); last["backup"] = now
             state["cycles"] += 1
         except Exception as e:  # noqa: BLE001
             logging.getLogger("service").debug(f"loop: {e}")
@@ -608,6 +621,21 @@ elif PAGE == "Ajustes":
     cfg["stop_loss_on_day"] = r[0].number_input("Stop-loss diario $ (negativo lo arma)", value=float(cfg.get("stop_loss_on_day", -30)), step=5.0)
     cfg["take_profit_on_day"] = r[1].number_input("Take-profit diario $ (0 = off)", value=float(cfg.get("take_profit_on_day", 0)), step=5.0)
     st.caption("Todos los cambios se aplican **en vivo** al motor. Modo paper — dinero virtual.")
+
+    st.markdown("<hr>", unsafe_allow_html=True)
+    st.markdown('<div class="k-label">Respaldo en Google Drive</div>', unsafe_allow_html=True)
+    if gdrive_sync.configured():
+        st.markdown(badge("activo", "win"), unsafe_allow_html=True)
+        st.caption("La base se respalda cada 5 minutos y se restaura sola al reiniciar. "
+                   "Un deploy ya no borra las apuestas.")
+        if st.button("💾 Respaldar ahora"):
+            st.success("Respaldo subido a Drive.") if gdrive_sync.push() else \
+                st.error("No se pudo respaldar — mirá Registros.")
+    else:
+        st.markdown(badge("sin configurar", "warn"), unsafe_allow_html=True)
+        st.caption("Sin esto la base vive en disco efímero: **cada deploy o reinicio la borra**. "
+                   "Corré `python python/setup_gdrive.py <client.json> <FOLDER_ID>` y pegá el "
+                   "resultado en Secrets.")
 
 # ══════════════════════════ CLAVES ════════════════════════════════
 elif PAGE == "Claves":
