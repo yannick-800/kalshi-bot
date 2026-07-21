@@ -217,6 +217,13 @@ def should_trade(signal: dict, source: str, cfg: dict) -> tuple[bool, str]:
     if source == "whale":
         if not cfg.get("trade_whales", False):
             return False, "whales disabled"
+        # Also checked here, not just at detection: whales already queued under
+        # a looser threshold would otherwise still be traded after you raise it,
+        # so the setting would not mean what it says.
+        min_usd = float(cfg.get("min_whale_usd", 0) or 0)
+        usd = float(signal.get("dollar_value") or 0)
+        if min_usd > 0 and usd > 0 and usd < min_usd:
+            return False, f"ballena ${usd:,.0f} < ${min_usd:,.0f}"
         if conf < cfg["min_confidence_whale"]:
             return False, f"conf {conf:.1f} < {cfg['min_confidence_whale']}"
         if edge < cfg["min_edge_pts_whale"]:
