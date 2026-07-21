@@ -8,6 +8,7 @@ coloured tables. Paper-trading only — no keys, safe to host publicly.
 from __future__ import annotations
 
 import asyncio
+import hmac
 import logging
 import os
 import sys
@@ -112,6 +113,44 @@ hr{ border-color:var(--border); }
 </style>
 """
 st.markdown(CSS, unsafe_allow_html=True)
+
+
+# ── Access gate ─────────────────────────────────────────────────────
+# Streamlit Cloud's free tier only allows one private app per workspace, so
+# this one is public by URL. The password keeps strangers out of the controls
+# (reset, settings, credentials). Set APP_PASSWORD in the app's Secrets; with
+# no secret set we refuse to render rather than silently serving it open.
+def _gate() -> None:
+    if st.session_state.get("_ok"):
+        return
+    expected = None
+    try:
+        expected = st.secrets.get("APP_PASSWORD")
+    except Exception:  # noqa: BLE001  — no secrets.toml at all
+        pass
+
+    st.markdown('<div class="k-brand" style="font-size:26px">KALSHI BOT</div>', unsafe_allow_html=True)
+    if not expected:
+        st.error("Falta configurar la contraseña.")
+        st.markdown(
+            'En Streamlit Cloud: **Manage app → Settings → Secrets**, y pegá una línea:\n\n'
+            '```toml\nAPP_PASSWORD = "la-que-elijas"\n```\n\n'
+            'Guardá y la app se reinicia sola. Hasta entonces no se muestra nada.')
+        st.stop()
+
+    pw = st.text_input("Contraseña", type="password", key="_pw")
+    if st.button("Entrar", type="primary"):
+        if hmac.compare_digest(str(pw), str(expected)):
+            st.session_state["_ok"] = True
+            del st.session_state["_pw"]
+            st.rerun()
+        else:
+            st.error("Contraseña incorrecta.")
+    st.caption("Panel privado · paper trading. Si no es tuyo, no deberías estar acá.")
+    st.stop()
+
+
+_gate()
 
 
 # ── Trading engine (runs ONCE in a background thread) ───────────────

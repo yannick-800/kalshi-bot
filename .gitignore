@@ -13,3 +13,4 @@ python/__pycache__/
 # NEVER commit credentials or the RSA private key
 credentials/
 *.pem
+.streamlit/secrets.toml
