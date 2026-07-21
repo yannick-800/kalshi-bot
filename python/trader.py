@@ -551,6 +551,15 @@ async def paper_execute_signal(signal: dict, source: str, cfg: dict, cash_usd: f
     fees = contracts * _taker_fee_cents(limit_cents) / 100.0
     meta = await _enrich_meta(signal["ticker"], signal)
 
+    # Second same-event guard, now that we know the match name. The ticker
+    # prefix check above misses when the outcome is not the last segment, which
+    # is how both sides of one game got booked.
+    with db.get_db() as conn:
+        if db.count_positions_with_event_title(
+                conn, meta["event_title"], PAPER_ENV) >= int(cfg["max_positions_per_event"]):
+            logger.info(f"[gate] ya hay posicion en {meta['event_title']!r} — salteo {signal['ticker']}")
+            return None
+
     row = {
         "signal_source": source, "signal_id": signal["id"], "ticker": signal["ticker"],
         "event_ticker": meta["event_ticker"], "title": meta["title"],

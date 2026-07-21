@@ -362,6 +362,27 @@ def count_positions_in_event(conn, event_ticker: str, env: str) -> int:
     ).fetchone()[0]
 
 
+def count_positions_with_event_title(conn, event_title: str, env: str) -> int:
+    """Same-event count by the human match name ("Cincinnati vs Seattle").
+
+    The ticker-prefix check above only groups two markets when they share a
+    prefix, which assumes the outcome is the ticker's last segment. When that
+    assumption breaks the bot books both sides of one game — it did, and lost
+    twice on the same match. The title comes from the event itself, so this
+    catches it whatever the ticker looks like.
+    """
+    t = (event_title or "").strip().lower()
+    if not t:
+        return 0
+    return conn.execute(
+        """SELECT COUNT(*) FROM bot_positions
+           WHERE kalshi_env=? AND resolved=0
+             AND status IN ('submitted','partial','filled')
+             AND LOWER(TRIM(event_title))=?""",
+        (env, t),
+    ).fetchone()[0]
+
+
 def count_positions_in_event_prefix(conn, event_prefix: str, env: str) -> int:
     """Robust same-event count: any open position whose market ticker belongs to
     this event (e.g. all markets under KX...SERBER), regardless of how its
