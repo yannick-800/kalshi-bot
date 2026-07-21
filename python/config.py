@@ -41,13 +41,13 @@ DEFAULT_CONFIG: dict[str, Any] = {
     # favourable payoff, a real fee-net edge, and tighter risk.
     "min_edge_pts_whale": 6.0,
     "min_edge_pts_momentum": 6.0,
-    "min_confidence_whale": 55.0,
-    "min_confidence_momentum": 55.0,
+    "min_confidence_whale": 57.0,
+    "min_confidence_momentum": 57.0,
     "fee_aware_edge": True,          # subtract Kalshi taker fee from edge
     "max_entry_slippage_cents": 4,
-    "min_market_volume": 100.0,
+    "min_market_volume": 1000.0,   # mercados finos dan malos fills
     "min_entry_price_cents": 30,     # skip pure longshots
-    "max_entry_price_cents": 55,     # skip expensive favourites (the big losers)
+    "max_entry_price_cents": 60,     # 60c ya exige 61.7% de acierto para empatar
     "max_resolution_days": 30,
     "max_resolution_hours": 0.0,     # 0 = off; >0 only trades markets closing soon
     "strategy_preset": "Conservadora",  # informational label for the active preset
@@ -116,7 +116,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
 
     # ── Daily risk gates ────────────────────────────────────────────
     "start_bankroll_usd": 0.0,
-    "stop_loss_on_day": -30.0,       # absolute USD; <0 arms it
+    "stop_loss_on_day": -60.0,       # 6% de la banca; <0 lo arma
     "stop_loss_on_day_pct": 0.0,     # OFF — the dollar value above is the real stop
     "take_profit_on_day": 0.0,       # absolute USD; >0 arms it
 

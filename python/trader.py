@@ -150,11 +150,11 @@ def explain_trade(signal: dict, source: str, direction: str, limit_cents: int,
                 f"Entrada {limit_cents}¢, lado {lado}.")
 
     if cfg.get("contrarian_only"):
-        return (f"Momentum contrarian · hubo un clúster de volumen y el bot apuesta "
+        return (f"Impulso a contramano · hubo un clúster de volumen y el bot apuesta "
                 f"EN CONTRA de la multitud, con {edge_pts:+.0f} pts de ventaja y "
                 f"confianza {conf:.0f}. Entrada {limit_cents}¢, lado {lado}.")
 
-    return (f"Momentum · clúster de volumen/precio con {edge_pts:+.0f} pts de "
+    return (f"Impulso · clúster de volumen/precio con {edge_pts:+.0f} pts de "
             f"ventaja y confianza {conf:.0f}. Entrada {limit_cents}¢, lado {lado}.")
 
 
