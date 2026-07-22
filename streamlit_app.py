@@ -439,26 +439,37 @@ if PAGE == "Panel":
 # ══════════════════════════ SEÑALES ═══════════════════════════════
 elif PAGE == "Señales":
     st.markdown('<h2 class="k-neon" style="margin:0 0 6px">Señales</h2>', unsafe_allow_html=True)
+    st.caption("Lo que el escáner detecta antes de decidir. **Importe** = cuánto movió la "
+               "ballena en ese mercado (por eso el bot lo sigue). El nombre exacto del jugador "
+               "aparece en **Posiciones** cuando la apuesta se concreta.")
     sig = []
     for r in whales:
         pc = int(round(float(r.get("price") or 0) * 100))
         sig.append((r.get("created_at"), "ballena", r.get("title") or r.get("ticker"),
-                    (r.get("taker_side") or "yes").upper(), pc, float(r.get("confidence") or 0)))
+                    r.get("ticker"), (r.get("taker_side") or "yes").upper(), pc,
+                    float(r.get("confidence") or 0), float(r.get("dollar_value") or 0)))
     for r in alerts:
         d = (r.get("direction") or "yes")
         yc = int(round(float(r.get("price") or 0) * 100))
         cc = yc if d == "yes" else max(0, 100 - yc)
         lbl = "tenis" if (r.get("signal_type") or "").startswith("tennis") else "impulso"
-        sig.append((r.get("created_at"), lbl, r.get("title") or r.get("ticker"), d.upper(), cc, float(r.get("confidence") or 0)))
+        sig.append((r.get("created_at"), lbl, r.get("title") or r.get("ticker"),
+                    r.get("ticker"), d.upper(), cc, float(r.get("confidence") or 0), 0.0))
     sig.sort(key=lambda x: x[0] or "", reverse=True)
     if sig:
-        body = "".join(
-            f'<tr><td class="dim">{timeago(t)}</td><td>{badge(src,"info" if src in("ballena","tenis") else "neutral")}</td>'
-            f'<td>{(title or "")[:44]}</td><td>{side}</td><td class="mono">{pc}¢</td><td class="mono">{conf:.0f}</td></tr>'
-            for t, src, title, side, pc, conf in sig[:120])
+        rows = ""
+        for t, src, title, ticker, side, pc, conf, usd in sig[:120]:
+            usd_html = (f'<span class="chip" style="background:rgba(168,85,247,.15);color:var(--purple)">${usd:,.0f}</span>'
+                        if usd > 0 else '<span class="dim">—</span>')
+            mkt = f'<a class="k-link" href="{market_url(ticker)}" target="_blank">{(title or "")[:40]} ↗</a>'
+            rows += (f'<tr><td class="dim">{timeago(t)}</td>'
+                     f'<td>{badge(src,"info" if src in("ballena","tenis") else "neutral")}</td>'
+                     f'<td class="mono">{usd_html}</td><td>{mkt}</td><td>{side}</td>'
+                     f'<td class="mono">{pc}¢</td><td class="mono">{conf:.0f}</td></tr>')
         st.markdown(f'<div class="k-card" style="padding:0;overflow-x:auto"><table class="k-tbl">'
-                    f'<thead><tr><th>Cuándo</th><th>Fuente</th><th>Mercado</th><th>Lado</th><th>Precio</th><th>Conf</th></tr></thead>'
-                    f'<tbody>{body}</tbody></table></div>', unsafe_allow_html=True)
+                    f'<thead><tr><th>Cuándo</th><th>Fuente</th><th>Importe</th><th>Mercado</th>'
+                    f'<th>Lado</th><th>Precio</th><th>Conf</th></tr></thead>'
+                    f'<tbody>{rows}</tbody></table></div>', unsafe_allow_html=True)
     else:
         st.markdown('<div class="k-card dim">Sin señales aún — el escáner detecta ballenas y señales en vivo.</div>',
                     unsafe_allow_html=True)
@@ -721,6 +732,54 @@ elif PAGE == "Claves":
 # ══════════════════════════ REGISTROS ═════════════════════════════
 elif PAGE == "Registros":
     st.markdown('<h2 class="k-neon" style="margin:0 0 6px">Registros</h2>', unsafe_allow_html=True)
+
+    # ── Histórico completo de apuestas (incluye lo archivado por "Reiniciar") ──
+    st.markdown('<div class="k-sect">📜 Histórico completo de apuestas</div>', unsafe_allow_html=True)
+    hist = db.all_positions_history(limit=1000)
+    if hist:
+        done = [p for p in hist if p.get("resolved")]
+        wins = sum(1 for p in done if p.get("outcome_correct") == 1)
+        losses = sum(1 for p in done if p.get("outcome_correct") == 0)
+        net = sum(float(p.get("pnl_usd") or 0) for p in done)
+        n_arch = sum(1 for p in hist if p.get("archived"))
+        tone = "win" if net >= 0 else "loss"
+        st.markdown(
+            f'<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:8px">'
+            f'{badge(f"{len(hist)} apuestas", "neutral")}{badge(f"{wins} ganadas", "win")}'
+            f'{badge(f"{losses} perdidas", "loss")}'
+            f'{badge(f"neto {usd(net, True)}", tone)}'
+            f'{badge(f"{n_arch} archivadas", "info") if n_arch else ""}</div>',
+            unsafe_allow_html=True)
+        rows = ""
+        for p in hist[:400]:
+            if p.get("resolved"):
+                est = (badge("ganada ✓", "win") if p.get("outcome_correct") == 1
+                       else badge("perdida ✗", "loss"))
+                pnl = float(p.get("pnl_usd") or 0)
+                pnl_html = f'<span class="{"win" if pnl >= 0 else "loss"}">{usd(pnl, True)}</span>'
+            else:
+                est = badge("en curso", "warn")
+                pnl_html = '<span class="dim">—</span>'
+            src = "archivo" if p.get("archived") else "activa"
+            mkt = (p.get("event_title") or p.get("title") or p.get("ticker") or "")[:34]
+            rows += (f'<tr><td class="dim">{fdate(p.get("created_at"))}</td>'
+                     f'<td>{type_badge(p.get("mtype"))}</td>'
+                     f'<td><a class="k-link" href="{market_url(p.get("ticker"))}" target="_blank">{mkt} ↗</a></td>'
+                     f'<td>{(p.get("yes_label") or "—")[:22]}</td>'
+                     f'<td class="mono dim">{usd(p.get("cost_usd") or 0)}</td>'
+                     f'<td class="mono">{pnl_html}</td><td>{est}</td>'
+                     f'<td class="dim" style="font-size:11px">{src}</td></tr>')
+        st.markdown(
+            f'<div class="k-card" style="padding:0;max-height:420px;overflow:auto"><table class="k-tbl">'
+            f'<thead><tr><th>Fecha</th><th>Tipo</th><th>Mercado</th><th>Apuesta</th>'
+            f'<th>Costo</th><th>Resultado</th><th>Estado</th><th>Origen</th></tr></thead>'
+            f'<tbody>{rows}</tbody></table></div>', unsafe_allow_html=True)
+    else:
+        st.markdown('<div class="k-card dim">Todavía no hay apuestas en el histórico.</div>',
+                    unsafe_allow_html=True)
+
+    st.markdown("<hr>", unsafe_allow_html=True)
+    st.markdown('<div class="k-sect">🖥️ Registro del motor</div>', unsafe_allow_html=True)
     logs = list(engine["logs"])[-200:][::-1]
     if logs:
         lvl = {"ERROR": "loss", "WARNING": "warn", "INFO": "muted", "DEBUG": "dim"}

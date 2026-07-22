@@ -232,6 +232,31 @@ def load_config() -> dict:
         return {}
 
 
+def all_positions_history(limit: int = 1000) -> list[dict]:
+    """Every paper bet ever made — the live ones plus everything archived by
+    'Reiniciar a cero'. Used by the history view so a reset never hides data;
+    each row carries `archived` so the UI can tell current from reserved.
+    """
+    out: list[dict] = []
+    with get_db() as conn:
+        for r in conn.execute(
+                "SELECT * FROM bot_positions WHERE kalshi_env='paper' "
+                "ORDER BY created_at DESC LIMIT ?", (limit,)):
+            d = dict(r); d["archived"] = 0
+            out.append(d)
+        has_archive = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' "
+            "AND name='bot_positions_archive'").fetchone()
+        if has_archive:
+            for r in conn.execute(
+                    "SELECT * FROM bot_positions_archive WHERE kalshi_env='paper' "
+                    "ORDER BY created_at DESC LIMIT ?", (limit,)):
+                d = dict(r); d["archived"] = 1
+                out.append(d)
+    out.sort(key=lambda x: x.get("created_at") or "", reverse=True)
+    return out[:limit]
+
+
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
