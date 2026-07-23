@@ -109,6 +109,12 @@ a.k-link{ color:var(--indigo); text-decoration:none; } a.k-link:hover{ color:var
 [data-testid="stNumberInputStepUp"], [data-testid="stNumberInputStepDown"]{
   background:transparent !important; color:#fff !important; }
 hr{ border-color:var(--border); }
+/* Señales como tabla interactiva (columns + boton por fila) */
+.k-th{ font-size:11px; font-weight:600; text-transform:uppercase; letter-spacing:.05em;
+ color:var(--muted); padding:6px 8px; border-bottom:1px solid var(--border); }
+.k-cell{ font-size:13px; padding:7px 8px; border-radius:6px; min-height:34px;
+ display:flex; align-items:center; color:rgba(255,255,255,.9); }
+[data-testid="stHorizontalBlock"]{ align-items:center; }
 </style>
 """
 st.markdown(CSS, unsafe_allow_html=True)
@@ -178,6 +184,7 @@ def get_engine() -> dict:
 
 def _spawn(state):
     loop = asyncio.new_event_loop(); asyncio.set_event_loop(loop)
+    state["loop"] = loop   # exposed so manual bets run on the SAME loop/client
     loop.run_until_complete(_run(state))
 
 
@@ -440,39 +447,112 @@ if PAGE == "Panel":
 elif PAGE == "Señales":
     st.markdown('<h2 class="k-neon" style="margin:0 0 6px">Señales</h2>', unsafe_allow_html=True)
     st.caption("Lo que el escáner detecta antes de decidir. **Importe** = cuánto movió la "
-               "ballena en ese mercado (por eso el bot lo sigue). El nombre exacto del jugador "
-               "aparece en **Posiciones** cuando la apuesta se concreta.")
-    sig = []
-    for r in whales:
-        pc = int(round(float(r.get("price") or 0) * 100))
-        sig.append((r.get("created_at"), "ballena", r.get("title") or r.get("ticker"),
-                    r.get("ticker"), (r.get("taker_side") or "yes").upper(), pc,
-                    float(r.get("confidence") or 0), float(r.get("dollar_value") or 0)))
-    for r in alerts:
+               "ballena (resaltado si supera $5.000). **Apuesta** = el resultado al que apunta; "
+               "el nombre completo del jugador aparece en **Posiciones** al concretarse. "
+               "Con 🎯 apostás a mano a esa señal e impacta en Posiciones.")
+
+    # Mensaje de la última apuesta manual (sobrevive al rerun del boton).
+    if st.session_state.get("_bet_msg"):
+        tone, txt = st.session_state.pop("_bet_msg")
+        (st.success if tone == "ok" else st.warning)(txt)
+
+    # La lista se CONGELA en session_state: sin esto, el auto-refresco reordena
+    # la tabla bajo el mouse y el clic en 🎯 cae en otra fila (o en un link).
+    # Se refresca solo al tocar "Actualizar" o al cambiar el filtro.
+    cc = st.columns([1.1, 1.4, 2])
+    do_refresh = cc[0].button("🔄 Actualizar")
+    incl = cc[1].toggle("Incluir archivadas", value=st.session_state.get("sig_incl", False))
+    if ("sig_snap" not in st.session_state or do_refresh
+            or incl != st.session_state.get("sig_incl")):
+        st.session_state["sig_incl"] = incl
+        st.session_state["sig_snap"] = db.load_signals(limit=3000, include_archived=incl)
+        st.session_state["sig_shown"] = 40
+
+    def _to_row(r):
+        if r["_kind"] == "whale":
+            return dict(kind="whale", src="ballena", when=r.get("created_at"), sig=r,
+                        title=r.get("title") or r.get("ticker"), ticker=r.get("ticker"),
+                        side=(r.get("taker_side") or "yes").upper(),
+                        price=int(round(float(r.get("price") or 0) * 100)),
+                        conf=float(r.get("confidence") or 0), usd=float(r.get("dollar_value") or 0),
+                        archived=r.get("archived", 0))
         d = (r.get("direction") or "yes")
         yc = int(round(float(r.get("price") or 0) * 100))
-        cc = yc if d == "yes" else max(0, 100 - yc)
         lbl = "tenis" if (r.get("signal_type") or "").startswith("tennis") else "impulso"
-        sig.append((r.get("created_at"), lbl, r.get("title") or r.get("ticker"),
-                    r.get("ticker"), d.upper(), cc, float(r.get("confidence") or 0), 0.0))
-    sig.sort(key=lambda x: x[0] or "", reverse=True)
-    if sig:
-        rows = ""
-        for t, src, title, ticker, side, pc, conf, usd in sig[:120]:
-            usd_html = (f'<span class="chip" style="background:rgba(168,85,247,.15);color:var(--purple)">${usd:,.0f}</span>'
-                        if usd > 0 else '<span class="dim">—</span>')
-            mkt = f'<a class="k-link" href="{market_url(ticker)}" target="_blank">{(title or "")[:40]} ↗</a>'
-            rows += (f'<tr><td class="dim">{timeago(t)}</td>'
-                     f'<td>{badge(src,"info" if src in("ballena","tenis") else "neutral")}</td>'
-                     f'<td class="mono">{usd_html}</td><td>{mkt}</td><td>{side}</td>'
-                     f'<td class="mono">{pc}¢</td><td class="mono">{conf:.0f}</td></tr>')
-        st.markdown(f'<div class="k-card" style="padding:0;overflow-x:auto"><table class="k-tbl">'
-                    f'<thead><tr><th>Cuándo</th><th>Fuente</th><th>Importe</th><th>Mercado</th>'
-                    f'<th>Lado</th><th>Precio</th><th>Conf</th></tr></thead>'
-                    f'<tbody>{rows}</tbody></table></div>', unsafe_allow_html=True)
-    else:
+        return dict(kind="alert", src=lbl, when=r.get("created_at"), sig=r,
+                    title=r.get("title") or r.get("ticker"), ticker=r.get("ticker"),
+                    side=d.upper(), price=(yc if d == "yes" else max(0, 100 - yc)),
+                    conf=float(r.get("confidence") or 0), usd=0.0, archived=r.get("archived", 0))
+
+    rows = [_to_row(r) for r in st.session_state["sig_snap"]]
+    shown = st.session_state.get("sig_shown", 40)
+
+    if not rows:
         st.markdown('<div class="k-card dim">Sin señales aún — el escáner detecta ballenas y señales en vivo.</div>',
                     unsafe_allow_html=True)
+    else:
+        SPEC = [0.8, 0.9, 2.4, 1.1, 1.2, 0.6, 0.6, 0.5, 0.7]
+        heads = ["CUÁNDO", "FUENTE", "MERCADO", "IMPORTE", "APUESTA", "LADO", "PRECIO", "CONF", ""]
+        hc = st.columns(SPEC)
+        for c, h in zip(hc, heads):
+            c.markdown(f'<div class="k-th">{h}</div>', unsafe_allow_html=True)
+
+        for it in rows[:shown]:
+            hot = it["usd"] > 5000
+            bg = "background:#ffffff21;" if hot else ""
+            cell = f'<div class="k-cell" style="{bg}">'
+            end = '</div>'
+            if hot:
+                usd_html = f'<span class="chip" style="background:rgb(168 85 247 / 82%);color:#efdfff">${it["usd"]:,.0f}</span>'
+            elif it["usd"] > 0:
+                usd_html = f'<span class="chip" style="background:rgba(168,85,247,.15);color:var(--purple)">${it["usd"]:,.0f}</span>'
+            else:
+                usd_html = '<span class="dim">—</span>'
+            pick = (it["ticker"].split("-")[-1] if it["ticker"] else "—")
+            arch = ' <span class="dim" style="font-size:10px">(arch.)</span>' if it["archived"] else ""
+            mkt = f'<a class="k-link" href="{market_url(it["ticker"])}" target="_blank">{(it["title"] or "")[:34]} ↗</a>{arch}'
+            c = st.columns(SPEC)
+            c[0].markdown(f'{cell}<span class="dim">{timeago(it["when"])}</span>{end}', unsafe_allow_html=True)
+            c[1].markdown(f'{cell}{badge(it["src"],"info" if it["src"] in ("ballena","tenis") else "neutral")}{end}', unsafe_allow_html=True)
+            c[2].markdown(f'{cell}{mkt}{end}', unsafe_allow_html=True)
+            c[3].markdown(f'{cell}{usd_html}{end}', unsafe_allow_html=True)
+            c[4].markdown(f'{cell}<span class="mono">{pick}</span>{end}', unsafe_allow_html=True)
+            c[5].markdown(f'{cell}{it["side"]}{end}', unsafe_allow_html=True)
+            c[6].markdown(f'{cell}<span class="mono">{it["price"]}¢</span>{end}', unsafe_allow_html=True)
+            c[7].markdown(f'{cell}<span class="mono">{it["conf"]:.0f}</span>{end}', unsafe_allow_html=True)
+            if c[8].button("🎯", key=f'bet_{it["kind"]}_{it["archived"]}_{it["sig"].get("id")}', help="Apostar a esta señal"):
+                source = "whale" if it["kind"] == "whale" else "momentum"
+                cash = trader.paper_available_cash(cfg)
+                coro = trader.paper_execute_signal(it["sig"], source, cfg, cash, manual=True)
+                try:
+                    # Run on the engine's loop so the shared httpx client isn't
+                    # touched from two loops (that caused "event loop is closed").
+                    eloop = engine.get("loop")
+                    if eloop and eloop.is_running():
+                        pos = asyncio.run_coroutine_threadsafe(coro, eloop).result(timeout=30)
+                    else:
+                        pos = asyncio.run(coro)
+                except Exception as e:  # noqa: BLE001
+                    pos = None; logging.getLogger("service").warning(f"apuesta manual: {e}")
+                if pos and not pos.get("_error"):
+                    st.session_state["_bet_msg"] = ("ok",
+                        f'Apuesta creada: {pos.get("yes_label") or pos.get("event_title") or it["ticker"]} '
+                        f'a {pos.get("limit_price_cents")}¢. Mirá Posiciones.')
+                else:
+                    motivo = (pos or {}).get("_error", "no se pudo ejecutar la apuesta")
+                    st.session_state["_bet_msg"] = ("warn", f"No se pudo apostar: {motivo}")
+                st.rerun()
+
+        # Pie: rango de fechas + paginación (en vez de scroll infinito).
+        newest = fdate(rows[0]["when"]); oldest = fdate(rows[min(shown, len(rows)) - 1]["when"])
+        st.markdown(
+            f'<div class="k-sub" style="margin-top:10px">Mostrando {min(shown, len(rows))} de '
+            f'{len(rows)} señales · de <b>{newest}</b> a <b>{oldest}</b></div>',
+            unsafe_allow_html=True)
+        if shown < len(rows):
+            if st.button(f"▼ Mostrar 40 más ({len(rows) - shown} restantes)"):
+                st.session_state["sig_shown"] = shown + 40
+                st.rerun()
 
 # ══════════════════════════ POSICIONES ════════════════════════════
 elif PAGE == "Posiciones":
@@ -792,4 +872,7 @@ elif PAGE == "Registros":
     else:
         st.markdown('<div class="k-card dim">Sin registros aún.</div>', unsafe_allow_html=True)
 
-st_autorefresh(interval=6000, key="refresh")
+# En Señales NO auto-refrescamos: la tabla queda quieta para poder apostar con
+# 🎯 (el snapshot se actualiza a mano con "Actualizar"). El resto sí, en vivo.
+if PAGE != "Señales":
+    st_autorefresh(interval=6000, key="refresh")

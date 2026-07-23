@@ -257,6 +257,32 @@ def all_positions_history(limit: int = 1000) -> list[dict]:
     return out[:limit]
 
 
+def load_signals(limit: int = 2000, include_archived: bool = True) -> list[dict]:
+    """Every whale/alert signal ever seen — live plus archived by a reset.
+    Each row is tagged `_kind` ('whale'|'alert') and `archived` (0|1) so the
+    UI can render and bet on them uniformly and never lose the history.
+    """
+    out: list[dict] = []
+    with get_db() as conn:
+        def _pull(table: str, kind: str, archived: int):
+            exists = conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name=?",
+                (table,)).fetchone()
+            if not exists:
+                return
+            for r in conn.execute(
+                    f"SELECT * FROM {table} ORDER BY created_at DESC LIMIT ?", (limit,)):
+                d = dict(r); d["_kind"] = kind; d["archived"] = archived
+                out.append(d)
+        _pull("whale_trades", "whale", 0)
+        _pull("alerts", "alert", 0)
+        if include_archived:
+            _pull("whale_trades_archive", "whale", 1)
+            _pull("alerts_archive", "alert", 1)
+    out.sort(key=lambda x: x.get("created_at") or "", reverse=True)
+    return out[:limit]
+
+
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -715,9 +741,20 @@ def archive_paper_to_reserve() -> dict:
             f"SELECT {scols}, ? FROM pnl_snapshots WHERE env='paper'", (stamp,)).rowcount
         conn.execute("DELETE FROM pnl_snapshots WHERE env='paper'")
         conn.execute("DELETE FROM bot_runs WHERE kalshi_env='paper'")
-        conn.execute("DELETE FROM whale_trades")
-        conn.execute("DELETE FROM alerts")
-    logger.info(f"paper reset: archived {n1} positions, {n2} snapshots to reserve")
+        # Signals are archived too, not dropped — a reset must never lose data.
+        for src in ("whale_trades", "alerts"):
+            dst = f"{src}_archive"
+            conn.execute(f"CREATE TABLE IF NOT EXISTS {dst} AS SELECT * FROM {src} WHERE 0")
+            dcols = {r[1] for r in conn.execute(f"PRAGMA table_info({dst})")}
+            for r in conn.execute(f"PRAGMA table_info({src})"):
+                if r[1] not in dcols:
+                    conn.execute(f"ALTER TABLE {dst} ADD COLUMN {r[1]} {r[2] or 'TEXT'}")
+            if "archived_at" not in dcols:
+                conn.execute(f"ALTER TABLE {dst} ADD COLUMN archived_at TEXT")
+            cols = ",".join(r[1] for r in conn.execute(f"PRAGMA table_info({src})"))
+            conn.execute(f"INSERT INTO {dst} ({cols}, archived_at) SELECT {cols}, ? FROM {src}", (stamp,))
+            conn.execute(f"DELETE FROM {src}")
+    logger.info(f"paper reset: archived {n1} positions, {n2} snapshots + signals to reserve")
     return {"archivedPositions": n1, "archivedSnapshots": n2}
 
 

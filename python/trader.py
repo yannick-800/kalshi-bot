@@ -604,41 +604,64 @@ def paper_available_cash(cfg: dict) -> float:
     return max(0.0, bankroll + stats["realized_pnl"] - stats["open_cost"])
 
 
-async def paper_execute_signal(signal: dict, source: str, cfg: dict, cash_usd: float) -> dict | None:
+async def paper_execute_signal(signal: dict, source: str, cfg: dict, cash_usd: float,
+                               manual: bool = False) -> dict | None:
     """Record the trade the bot WOULD place — virtual, no order, no auth.
 
     Fills instantly at a realistic price (the same limit-cross price the live
     engine would post), books the taker fee, and marks it filled. It later
     resolves win/loss from the public market result, exactly like a real fill.
+
+    manual=True is a bet the user forced from the Señales table: it skips the
+    quality/quantity caps (that's the point — the user overrode them) and uses
+    the wide price band, but still respects the open-position cap and cash so
+    the accounting stays sane. It never books the exact same market+side twice.
     """
     direction, signal_cost_cents = _signal_cost_cents(signal, source)
     edge_pts = _compute_edge(signal, source)
 
+    # On a manual bet we return the *reason* it was refused instead of a silent
+    # None, so the user sees exactly why (price too high, no cash, duplicate…).
+    def _stop(reason: str):
+        return {"_error": reason} if manual else None
+
     with db.get_db() as conn:
         if db.count_open_bot_positions(conn, PAPER_ENV) >= cfg["max_open_positions"]:
-            return None
-        if not cfg.get("unlimited_daily_new_positions"):
-            today = db.count_new_positions_today(conn, PAPER_ENV, int(cfg.get("trading_timezone_offset_min", 0) or 0))
-            if today >= int(cfg["max_daily_new_positions"]):
+            return _stop(f"llegaste al máximo de {int(cfg['max_open_positions'])} posiciones abiertas")
+        if not manual:
+            if not cfg.get("unlimited_daily_new_positions"):
+                today = db.count_new_positions_today(conn, PAPER_ENV, int(cfg.get("trading_timezone_offset_min", 0) or 0))
+                if today >= int(cfg["max_daily_new_positions"]):
+                    return None
+            if db.count_positions_in_event_prefix(conn, derive_event(signal["ticker"]), PAPER_ENV) >= int(cfg["max_positions_per_event"]):
                 return None
-        if db.count_positions_in_event_prefix(conn, derive_event(signal["ticker"]), PAPER_ENV) >= int(cfg["max_positions_per_event"]):
-            return None
         if db.exists_position_in_market(conn, signal["ticker"], direction, PAPER_ENV):
-            return None
+            return _stop("ya tenés esta misma apuesta abierta")
         exposure = db.current_total_exposure_usd(conn, PAPER_ENV)
 
-    target = _compute_position_usd(cash_usd, edge_pts, cfg)
     total_bankroll = float(cfg.get("paper_bankroll_usd", 1000.0) or 0.0)
-    target = min(target, max(0.0, total_bankroll * float(cfg["max_total_exposure_fraction"]) - exposure))
-    target = min(target, max(0.0, cash_usd - total_bankroll * float(cfg["min_cash_reserve_fraction"])))
+    if manual:
+        # Fixed, modest stake for a hand-picked bet, capped by available cash.
+        target = min(float(cfg.get("fixed_trade_usd", 5.0) or 5.0),
+                     float(cfg["hard_max_position_usd"]), max(0.0, cash_usd))
+    else:
+        target = _compute_position_usd(cash_usd, edge_pts, cfg)
+        target = min(target, max(0.0, total_bankroll * float(cfg["max_total_exposure_fraction"]) - exposure))
+        target = min(target, max(0.0, cash_usd - total_bankroll * float(cfg["min_cash_reserve_fraction"])))
     if target < 1.0:
-        return None
+        return _stop("no te queda saldo virtual suficiente para esta apuesta")
 
     limit_cents = await _compute_limit_price_cents(signal["ticker"], direction, signal_cost_cents, cfg)
-    lo, hi = entry_band(signal, cfg)
+    # Manual bets get a very wide band (the user chose it), but 99-100c is still
+    # blocked: at that price the fee alone guarantees a loss.
+    lo, hi = (1, 99) if manual else entry_band(signal, cfg)
     if not (lo <= limit_cents <= hi):
         logger.info(f"[gate] precio {limit_cents}c fuera de banda {lo}-{hi}c — salteo {signal['ticker']}")
-        return None
+        if manual and limit_cents >= 99:
+            return _stop(f"el único precio de compra es {limit_cents}¢: el mercado ya da ~100% a ese "
+                         "resultado, así que pagás casi $1 para cobrar $1 (sin ganancia posible). "
+                         "Probá el lado contrario o una señal con precio 30–90¢.")
+        return _stop(f"el precio de entrada ({limit_cents}¢) quedó fuera del rango operable")
 
     contracts = max(1, int(target * 100 // limit_cents))
     cost = contracts * limit_cents / 100.0
@@ -647,12 +670,14 @@ async def paper_execute_signal(signal: dict, source: str, cfg: dict, cash_usd: f
 
     # Second same-event guard, now that we know the match name. The ticker
     # prefix check above misses when the outcome is not the last segment, which
-    # is how both sides of one game got booked.
-    with db.get_db() as conn:
-        if db.count_positions_with_event_title(
-                conn, meta["event_title"], PAPER_ENV) >= int(cfg["max_positions_per_event"]):
-            logger.info(f"[gate] ya hay posicion en {meta['event_title']!r} — salteo {signal['ticker']}")
-            return None
+    # is how both sides of one game got booked. (Skipped for manual bets — the
+    # user is choosing this one on purpose.)
+    if not manual:
+        with db.get_db() as conn:
+            if db.count_positions_with_event_title(
+                    conn, meta["event_title"], PAPER_ENV) >= int(cfg["max_positions_per_event"]):
+                logger.info(f"[gate] ya hay posicion en {meta['event_title']!r} — salteo {signal['ticker']}")
+                return None
 
     row = {
         "signal_source": source, "signal_id": signal["id"], "ticker": signal["ticker"],
