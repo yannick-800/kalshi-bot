@@ -129,6 +129,7 @@ CREATE TABLE IF NOT EXISTS bot_positions (
     mtype TEXT DEFAULT '',
     event_title TEXT DEFAULT '',
     reason TEXT DEFAULT '',          -- why the bot took this bet, in plain Spanish
+    manual INTEGER DEFAULT 0,        -- 1 = the user placed it by hand from Señales
     kalshi_env TEXT DEFAULT 'demo',
     error TEXT,
     created_at TEXT,
@@ -205,6 +206,8 @@ def init_db() -> None:
         for col in ("close_time", "yes_label", "mtype", "event_title", "reason"):
             if col not in cols:
                 conn.execute(f"ALTER TABLE bot_positions ADD COLUMN {col} TEXT DEFAULT ''")
+        if "manual" not in cols:
+            conn.execute("ALTER TABLE bot_positions ADD COLUMN manual INTEGER DEFAULT 0")
     logger.info(f"database ready at {db_path()}")
 
 
@@ -255,6 +258,15 @@ def all_positions_history(limit: int = 1000) -> list[dict]:
                 out.append(d)
     out.sort(key=lambda x: x.get("created_at") or "", reverse=True)
     return out[:limit]
+
+
+def manual_bet_signal_keys(env: str = "paper") -> set:
+    """(signal_source, signal_id) pairs the user has bet on by hand — so the
+    Señales table can flag 'ya apostaste a esta' and disable the button."""
+    with get_db() as conn:
+        return {(r[0], r[1]) for r in conn.execute(
+            "SELECT DISTINCT signal_source, signal_id FROM bot_positions "
+            "WHERE manual=1 AND kalshi_env=?", (env,))}
 
 
 def load_signals(limit: int = 2000, include_archived: bool = True) -> list[dict]:
@@ -504,7 +516,7 @@ _POS_FIELDS = [
     "filled_contracts", "cost_usd", "client_order_id", "kalshi_order_id",
     "status", "confidence", "edge_pts", "signal_price", "balance_before_usd",
     "close_time", "yes_label", "mtype", "event_title", "kalshi_env", "error",
-    "reason",
+    "reason", "manual",
 ]
 
 

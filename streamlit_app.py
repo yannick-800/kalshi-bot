@@ -115,6 +115,12 @@ hr{ border-color:var(--border); }
 .k-cell{ font-size:13px; padding:7px 8px; border-radius:6px; min-height:34px;
  display:flex; align-items:center; color:rgba(255,255,255,.9); }
 [data-testid="stHorizontalBlock"]{ align-items:center; }
+/* Notificaciones (toasts) arriba a la derecha, por encima de las grillas */
+[data-testid="stToastContainer"], div[data-baseweb="toast"]{
+  top:1rem !important; bottom:auto !important; right:1rem !important; left:auto !important;
+  position:fixed !important; z-index:99999 !important; }
+[data-testid="stToast"]{ background:var(--surface2) !important; border:1px solid var(--borderHi) !important;
+  color:#fff !important; }
 </style>
 """
 st.markdown(CSS, unsafe_allow_html=True)
@@ -454,7 +460,7 @@ elif PAGE == "Señales":
     # Mensaje de la última apuesta manual (sobrevive al rerun del boton).
     if st.session_state.get("_bet_msg"):
         tone, txt = st.session_state.pop("_bet_msg")
-        (st.success if tone == "ok" else st.warning)(txt)
+        st.toast(txt, icon="✅" if tone == "ok" else "⚠️")
 
     # La lista se CONGELA en session_state: sin esto, el auto-refresco reordena
     # la tabla bajo el mouse y el clic en 🎯 cae en otra fila (o en un link).
@@ -497,7 +503,13 @@ elif PAGE == "Señales":
         for c, h in zip(hc, heads):
             c.markdown(f'<div class="k-th">{h}</div>', unsafe_allow_html=True)
 
+        # Señales a las que ya apostaste a mano (fresco, no congelado, para que
+        # se refleje al instante tras apostar).
+        bet_keys = db.manual_bet_signal_keys()
+
         for it in rows[:shown]:
+            source = "whale" if it["kind"] == "whale" else "momentum"
+            already = (source, it["sig"].get("id")) in bet_keys
             hot = it["usd"] > 5000
             bg = "background:#ffffff21;" if hot else ""
             cell = f'<div class="k-cell" style="{bg}">'
@@ -510,7 +522,10 @@ elif PAGE == "Señales":
                 usd_html = '<span class="dim">—</span>'
             pick = (it["ticker"].split("-")[-1] if it["ticker"] else "—")
             arch = ' <span class="dim" style="font-size:10px">(arch.)</span>' if it["archived"] else ""
-            mkt = f'<a class="k-link" href="{market_url(it["ticker"])}" target="_blank">{(it["title"] or "")[:34]} ↗</a>{arch}'
+            manflag = (' <span class="k-badge" style="border-color:rgba(245,158,11,.45);'
+                       'background:rgba(245,158,11,.15);color:var(--warn)">✋ apostada</span>'
+                       if already else "")
+            mkt = f'<a class="k-link" href="{market_url(it["ticker"])}" target="_blank">{(it["title"] or "")[:34]} ↗</a>{arch}{manflag}'
             c = st.columns(SPEC)
             c[0].markdown(f'{cell}<span class="dim">{timeago(it["when"])}</span>{end}', unsafe_allow_html=True)
             c[1].markdown(f'{cell}{badge(it["src"],"info" if it["src"] in ("ballena","tenis") else "neutral")}{end}', unsafe_allow_html=True)
@@ -520,8 +535,9 @@ elif PAGE == "Señales":
             c[5].markdown(f'{cell}{it["side"]}{end}', unsafe_allow_html=True)
             c[6].markdown(f'{cell}<span class="mono">{it["price"]}¢</span>{end}', unsafe_allow_html=True)
             c[7].markdown(f'{cell}<span class="mono">{it["conf"]:.0f}</span>{end}', unsafe_allow_html=True)
-            if c[8].button("🎯", key=f'bet_{it["kind"]}_{it["archived"]}_{it["sig"].get("id")}', help="Apostar a esta señal"):
-                source = "whale" if it["kind"] == "whale" else "momentum"
+            if already:
+                c[8].markdown(f'{cell}<span class="win">✓</span>{end}', unsafe_allow_html=True)
+            elif c[8].button("🎯", key=f'bet_{it["kind"]}_{it["archived"]}_{it["sig"].get("id")}', help="Apostar a esta señal"):
                 cash = trader.paper_available_cash(cfg)
                 coro = trader.paper_execute_signal(it["sig"], source, cfg, cash, manual=True)
                 try:
@@ -601,9 +617,12 @@ elif PAGE == "Posiciones":
                 f'<span class="chip" style="background:rgba({rgb},.15);color:var(--{tone})">{usd(pnl,True)}</span>'
             tint = "" if pnl is None else f'background:rgba({rgb},{".10" if p.get("resolved") else ".04"})'
             mkt = (p.get("event_title") or p.get("title") or p.get("ticker") or "")[:32]
+            man = ('<span class="k-badge" style="border-color:rgba(245,158,11,.45);'
+                   'background:rgba(245,158,11,.15);color:var(--warn);margin-right:6px">✋ manual</span>'
+                   if p.get("manual") else "")
             rows += (f'<tr style="{tint}"><td class="dim">{timeago(p.get("created_at"))}</td>'
                      f'<td>{type_badge(p.get("mtype"))}</td>'
-                     f'<td><a class="k-link" href="{market_url(p.get("ticker"))}" target="_blank">{mkt} ↗</a></td>'
+                     f'<td>{man}<a class="k-link" href="{market_url(p.get("ticker"))}" target="_blank">{mkt} ↗</a></td>'
                      f'<td>{(p.get("yes_label") or "—")[:24]}</td><td>{(p.get("direction") or "").upper()}</td>'
                      f'<td class="dim">{fdate(p.get("resolved_at") if p.get("resolved") else p.get("close_time"))}</td>'
                      f'<td class="mono">{p.get("filled_contracts",0)}/{p.get("target_contracts",0)}</td>'

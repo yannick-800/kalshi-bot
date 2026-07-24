@@ -690,6 +690,7 @@ async def paper_execute_signal(signal: dict, source: str, cfg: dict, cash_usd: f
         "balance_before_usd": cash_usd, "close_time": meta["close"],
         "yes_label": meta["yes_label"], "mtype": meta["mtype"],
         "event_title": meta["event_title"], "kalshi_env": PAPER_ENV,
+        "manual": 1 if manual else 0,
         "reason": explain_trade({**signal, "yes_label": meta["yes_label"]}, source,
                                 direction, limit_cents, edge_pts, contracts, cfg),
     }
